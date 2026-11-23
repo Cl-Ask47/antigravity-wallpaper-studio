@@ -1,0 +1,1211 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Wallpaper Studio · 壁纸库与上下文圆环</title>
+  <script src="/preload.js"></script>
+  <style>
+    :root {
+      --accent: #F1717F;
+      --warn: #F59E0B;
+      --danger: #EF4444;
+      --input-bg: #161b26;
+      --surface-alpha: 0.84;
+      --ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      --bg-base: var(--background, #0b0f18);
+      --fg-base: var(--foreground, #eaf0fa);
+      --muted-fg: var(--muted-foreground, #8c97ac);
+      --border-col: rgba(255, 255, 255, 0.11);
+      --card-bg: rgba(18, 23, 35, var(--surface-alpha));
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: var(--bg-base);
+      color: var(--fg-base);
+      font-family: var(--ui-font);
+      font-size: 12.5px;
+      overflow: hidden;
+    }
+
+    .bg-layer {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      background-size: cover;
+      background-position: center;
+      filter: blur(20px) brightness(0.38) saturate(1.25);
+      transform: scale(1.08);
+      opacity: 0.6;
+      transition: background-image 0.35s ease;
+      pointer-events: none;
+    }
+
+    .shell {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Top bar */
+    .topbar {
+      flex-shrink: 0;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border-col);
+      background: rgba(11, 15, 24, 0.78);
+      backdrop-filter: blur(14px);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .top-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .ring-wrap {
+      position: relative;
+      width: 46px;
+      height: 46px;
+      flex-shrink: 0;
+    }
+    .ring-wrap svg {
+      width: 46px;
+      height: 46px;
+      transform: rotate(-90deg);
+    }
+    .ring-center {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11.5px;
+      font-weight: 700;
+    }
+
+    .hero-meta {
+      flex: 1;
+      min-width: 0;
+    }
+    .hero-title {
+      font-size: 12.5px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .hero-sub {
+      font-size: 11px;
+      color: var(--muted-fg);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 10px;
+      margin-top: 2px;
+    }
+    .hero-sub strong { color: var(--fg-base); }
+
+    .action-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .pill-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 5px 9px;
+      border-radius: 999px;
+      border: 1px solid var(--border-col);
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--fg-base);
+      font-size: 11.5px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.14s ease;
+      white-space: nowrap;
+    }
+    .pill-btn:hover { border-color: var(--accent); }
+    .pill-btn.active {
+      background: color-mix(in srgb, var(--accent) 22%, transparent);
+      border-color: var(--accent);
+    }
+    .dot {
+      width: 6.5px;
+      height: 6.5px;
+      border-radius: 50%;
+      background: #64748b;
+    }
+    .pill-btn.active .dot {
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+    }
+
+    .seg-group {
+      display: inline-flex;
+      border: 1px solid var(--border-col);
+      border-radius: 7px;
+      overflow: hidden;
+      margin-left: auto;
+    }
+    .seg-btn {
+      padding: 3px 8px;
+      border: none;
+      background: transparent;
+      color: var(--muted-fg);
+      font-size: 10.5px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .seg-btn.active {
+      background: var(--accent);
+      color: #0b0f18;
+      font-weight: 600;
+    }
+
+    /* Main Split Layout: Sidebar + Gallery */
+    .workspace {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .sidebar {
+      width: 268px;
+      flex-shrink: 0;
+      border-right: 1px solid var(--border-col);
+      background: rgba(13, 18, 29, 0.86);
+      backdrop-filter: blur(16px);
+      overflow-y: auto;
+      padding: 10px;
+      transition: margin-left 0.2s ease, transform 0.2s ease, opacity 0.18s ease;
+    }
+    .sidebar.collapsed {
+      margin-left: -268px;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* Responsive drawer mode for narrow side panes (< 620px) */
+    @media (max-width: 620px) {
+      .sidebar {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: min(290px, 86vw);
+        z-index: 20;
+        margin-left: 0 !important;
+        transform: translateX(0);
+        box-shadow: 12px 0 32px rgba(0, 0, 0, 0.55);
+      }
+      .sidebar.collapsed {
+        transform: translateX(-105%);
+        opacity: 0;
+        pointer-events: none;
+      }
+    }
+
+    .drawer-scrim {
+      display: none;
+    }
+    @media (max-width: 620px) {
+      .drawer-scrim.open {
+        display: block;
+        position: absolute;
+        inset: 0;
+        z-index: 15;
+        background: rgba(0, 0, 0, 0.45);
+      }
+    }
+
+    details.sec {
+      background: var(--card-bg);
+      border: 1px solid var(--border-col);
+      border-radius: 10px;
+      margin-bottom: 8px;
+      overflow: hidden;
+    }
+    details.sec > summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 9px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      user-select: none;
+    }
+    details.sec > summary::-webkit-details-marker { display: none; }
+    details.sec > summary::after {
+      content: '▾';
+      color: var(--muted-fg);
+      transition: transform 0.16s ease;
+    }
+    details.sec:not([open]) > summary::after {
+      transform: rotate(-90deg);
+    }
+    .sec-body {
+      padding: 2px 10px 10px;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .ctrl {
+      margin-top: 8px;
+    }
+    .ctrl-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11.5px;
+      margin-bottom: 4px;
+    }
+    .ctrl-val {
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+      font-weight: 600;
+      font-size: 11px;
+    }
+    .ctrl-inline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 8px;
+      font-size: 11.5px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+      cursor: pointer;
+      margin: 0;
+    }
+    input[type="color"] {
+      width: 28px;
+      height: 22px;
+      padding: 0;
+      border: 1px solid var(--border-col);
+      border-radius: 5px;
+      background: transparent;
+      cursor: pointer;
+    }
+
+    .input, .select {
+      width: 100%;
+      height: 28px;
+      padding: 0 8px;
+      border-radius: 7px;
+      border: 1px solid var(--border-col);
+      background: var(--input-bg);
+      color: var(--fg-base);
+      font-family: inherit;
+      font-size: 11.5px;
+      outline: none;
+    }
+    .input:focus, .select:focus { border-color: var(--accent); }
+
+    .mini-btn {
+      padding: 4px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border-col);
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--fg-base);
+      font-size: 11px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .mini-btn:hover { border-color: var(--accent); color: #fff; }
+    .mini-btn.active {
+      background: color-mix(in srgb, var(--accent) 24%, transparent);
+      border-color: var(--accent);
+    }
+
+    .preset-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 6px;
+    }
+
+    /* Gallery Pane */
+    .gallery-pane {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .gallery-toolbar {
+      flex-shrink: 0;
+      padding: 10px 12px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      border-bottom: 1px solid var(--border-col);
+      background: rgba(11, 15, 24, 0.45);
+    }
+
+    .search-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .filter-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      align-items: center;
+    }
+    .chip {
+      padding: 3.5px 9px;
+      border-radius: 999px;
+      border: 1px solid var(--border-col);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--muted-fg);
+      font-size: 11px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .chip.active {
+      background: color-mix(in srgb, var(--accent) 22%, transparent);
+      border-color: var(--accent);
+      color: var(--fg-base);
+    }
+
+    .grid-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px 12px 20px;
+    }
+
+    .wp-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
+      gap: 9px;
+    }
+
+    .wp-card {
+      position: relative;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1.5px solid var(--border-col);
+      background: rgba(15, 20, 32, 0.9);
+      cursor: pointer;
+      transition: transform 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease;
+    }
+    .wp-card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(255, 255, 255, 0.35);
+    }
+    .wp-card.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent), 0 6px 18px rgba(0, 0, 0, 0.45);
+    }
+    .wp-thumb {
+      width: 100%;
+      aspect-ratio: 16 / 10;
+      object-fit: cover;
+      display: block;
+      background: #101624;
+    }
+    .wp-badge {
+      position: absolute;
+      top: 6px;
+      left: 6px;
+      padding: 2px 6px;
+      border-radius: 5px;
+      font-size: 9.5px;
+      font-weight: 700;
+      background: rgba(10, 14, 24, 0.80);
+      backdrop-filter: blur(4px);
+    }
+    .wp-badge.video { color: #38bdf8; }
+    .wp-badge.scene { color: #c084fc; }
+    .wp-badge.web { color: #34d399; }
+    .wp-badge.image { color: #cbd5e1; }
+
+    .pool-toggle {
+      position: absolute;
+      top: 5px;
+      right: 5px;
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      background: rgba(10, 14, 24, 0.78);
+      color: #cbd5e1;
+      font-size: 12px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      padding: 0;
+    }
+    .pool-toggle.in-pool {
+      background: var(--accent);
+      color: #0b0f18;
+      border-color: var(--accent);
+    }
+    .wp-name {
+      padding: 6px 7px;
+      font-size: 11px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .rot-banner {
+      font-size: 11px;
+      color: var(--muted-fg);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 5px 8px;
+      border-radius: 7px;
+      background: rgba(255, 255, 255, 0.04);
+      margin-top: 6px;
+    }
+    .rot-banner strong { color: var(--accent); }
+
+    .status-foot {
+      font-size: 10.5px;
+      color: var(--muted-fg);
+      margin-top: 8px;
+      line-height: 1.45;
+    }
+    .status-foot .ok { color: #34d399; }
+    .status-foot .err { color: #f87171; }
+  </style>
+</head>
+<body>
+  <div class="bg-layer" id="bgLayer"></div>
+  <div class="shell">
+    <!-- Top Header -->
+    <div class="topbar">
+      <div class="top-row">
+        <div class="ring-wrap" title="当前会话精确上下文占用">
+          <svg viewBox="0 0 46 46">
+            <circle cx="23" cy="23" r="18" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="4.2" />
+            <circle id="heroRingArc" cx="23" cy="23" r="18" fill="none" stroke="#F1717F" stroke-width="4.2" stroke-linecap="round" stroke-dasharray="113.1" stroke-dashoffset="113.1" />
+          </svg>
+          <div class="ring-center" id="heroPct">0%</div>
+        </div>
+        <div class="hero-meta">
+          <div class="hero-title" id="heroWpTitle">正在加载壁纸库...</div>
+          <div class="hero-sub">
+            <span>上下文 <strong id="heroTokens">0 / 512K</strong></span>
+            <span>缓存 <strong id="heroCache">0%</strong></span>
+            <span id="heroRotInfo"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="action-bar">
+        <button class="pill-btn active" id="btnToggleSidebar" title="展开/收起参数与轮播侧边栏">☰ 调参侧栏</button>
+        <button class="pill-btn" id="btnToggleBackdrop"><span class="dot"></span>贴背</button>
+        <button class="pill-btn" id="btnToggleHud"><span class="dot"></span>小圆环</button>
+        <button class="pill-btn" id="btnNextWp" title="按当前轮播池立即切换下一张">🎲 下一张</button>
+        <button class="mini-btn" id="btnRestoreOpacity" title="一键关闭贴背并恢复 100% 不透明">恢复原貌</button>
+        <div class="seg-group" id="limitGroup">
+          <button class="seg-btn" data-limit="256000">256K</button>
+          <button class="seg-btn" data-limit="512000">512K</button>
+          <button class="seg-btn" data-limit="1000000">1M</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Workspace: Collapsible Settings Sidebar + Wallpaper Library -->
+    <div class="workspace">
+      <div class="drawer-scrim" id="drawerScrim"></div>
+
+      <aside class="sidebar" id="sidebar">
+        <!-- Section 1: Translucency & Visuals -->
+        <details class="sec" open>
+          <summary>🎨 透明度与画面调节</summary>
+          <div class="sec-body">
+            <div class="ctrl">
+              <div class="ctrl-head">
+                <span>壁纸透显度（越大越清晰）</span>
+                <span class="ctrl-val" id="valTranslucency">25%</span>
+              </div>
+              <input type="range" id="rngTranslucency" min="0" max="55" step="1" />
+            </div>
+            <div class="ctrl">
+              <div class="ctrl-head">
+                <span>壁纸模糊</span>
+                <span class="ctrl-val" id="valBlur">2px</span>
+              </div>
+              <input type="range" id="rngBlur" min="0" max="24" step="1" />
+            </div>
+            <div class="ctrl">
+              <div class="ctrl-head">
+                <span>暗度遮罩</span>
+                <span class="ctrl-val" id="valDim">22%</span>
+              </div>
+              <input type="range" id="rngDim" min="0" max="80" step="1" />
+            </div>
+            <div class="ctrl">
+              <div class="ctrl-head">
+                <span>画面亮度</span>
+                <span class="ctrl-val" id="valBrightness">95%</span>
+              </div>
+              <input type="range" id="rngBrightness" min="40" max="160" step="1" />
+            </div>
+            <div class="ctrl">
+              <div class="ctrl-head">
+                <span>对比度 / 饱和度</span>
+                <span class="ctrl-val" id="valConSat">105% / 115%</span>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+                <input type="range" id="rngContrast" min="50" max="160" step="1" title="对比度" />
+                <input type="range" id="rngSaturate" min="0" max="200" step="1" title="饱和度" />
+              </div>
+            </div>
+            <div class="ctrl-inline">
+              <span>Scene 渲染帧率</span>
+              <select class="select" id="selSceneFps" style="width:92px">
+                <option value="15">15 FPS</option>
+                <option value="24">24 FPS</option>
+                <option value="30">30 FPS</option>
+                <option value="60">60 FPS</option>
+              </select>
+            </div>
+            <div class="ctrl-inline">
+              <span>壁纸静音</span>
+              <input type="checkbox" id="chkVideoMuted" />
+            </div>
+            <div class="ctrl" id="volWrap">
+              <div class="ctrl-head">
+                <span>音量</span>
+                <span class="ctrl-val" id="valVolume">0%</span>
+              </div>
+              <input type="range" id="rngVolume" min="0" max="100" step="1" />
+            </div>
+          </div>
+        </details>
+
+        <!-- Section 2: Auto Rotation -->
+        <details class="sec" open>
+          <summary>🔀 壁纸随机轮播</summary>
+          <div class="sec-body">
+            <div class="ctrl-inline">
+              <span>开启自动轮播</span>
+              <input type="checkbox" id="chkRotEnabled" />
+            </div>
+            <div class="rot-banner">
+              <span id="rotStatusText">未开启轮播</span>
+              <button class="mini-btn" id="btnRotNextSide">换一张</button>
+            </div>
+            <div class="ctrl-inline">
+              <span>播放顺序</span>
+              <select class="select" id="selRotOrder" style="width:118px">
+                <option value="random">随机轮播</option>
+                <option value="sequential">顺序轮播</option>
+              </select>
+            </div>
+            <div class="ctrl-inline">
+              <span>轮播范围</span>
+              <select class="select" id="selRotSource" style="width:118px">
+                <option value="all">全部壁纸</option>
+                <option value="dsh_fav">DSH 收藏池</option>
+                <option value="custom">自定义勾选池</option>
+                <option value="video">仅视频壁纸</option>
+                <option value="scene">仅 3D 场景</option>
+                <option value="web">仅网页壁纸</option>
+              </select>
+            </div>
+            <div class="ctrl">
+              <div class="ctrl-head">
+                <span>切换间隔（分钟）</span>
+                <span class="ctrl-val" id="valRotInterval">15 分钟</span>
+              </div>
+              <div class="preset-row" id="rotPresets">
+                <button class="mini-btn" data-min="1">1m</button>
+                <button class="mini-btn" data-min="5">5m</button>
+                <button class="mini-btn" data-min="15">15m</button>
+                <button class="mini-btn" data-min="30">30m</button>
+                <button class="mini-btn" data-min="60">60m</button>
+              </div>
+              <input class="input" id="numRotMin" type="number" min="1" max="240" style="margin-top:6px" placeholder="自定义分钟数 (1-240)" />
+            </div>
+          </div>
+        </details>
+
+        <!-- Section 3: Context Ring HUD -->
+        <details class="sec">
+          <summary>⭕ 极简上下文圆环</summary>
+          <div class="sec-body">
+            <div class="ctrl">
+              <div class="ctrl-head">
+                <span>圆环直径</span>
+                <span class="ctrl-val" id="valHudSize">40px</span>
+              </div>
+              <input type="range" id="rngHudSize" min="32" max="56" step="2" />
+            </div>
+            <div class="ctrl-inline">
+              <span>显示百分比数字</span>
+              <input type="checkbox" id="chkHudShowPct" />
+            </div>
+            <div class="ctrl-inline">
+              <span>常规 / 警戒 / 危险色</span>
+              <div style="display:flex;gap:4px">
+                <input type="color" id="colHudAccent" title="常规颜色" />
+                <input type="color" id="colHudWarn" title="65%+ 警戒色" />
+                <input type="color" id="colHudDanger" title="85%+ 危险色" />
+              </div>
+            </div>
+            <div class="ctrl-inline">
+              <span>圆环字体</span>
+              <select class="select" id="selHudFont" style="width:120px">
+                <option value="Segoe UI">Segoe UI</option>
+                <option value="Consolas">Consolas</option>
+                <option value="Cascadia Mono">Cascadia Mono</option>
+                <option value="Microsoft YaHei UI">微软雅黑</option>
+              </select>
+            </div>
+            <div class="ctrl">
+              <div class="ctrl-head"><span>追踪会话</span></div>
+              <select class="select" id="selSession"></select>
+            </div>
+            <div class="ctrl-inline">
+              <button class="mini-btn" id="btnResetHud" style="width:100%">重置小圆环位置到右下角</button>
+            </div>
+          </div>
+        </details>
+
+        <!-- Section 4: Panel Own Styling -->
+        <details class="sec">
+          <summary>✨ 面板自身主题与字体</summary>
+          <div class="sec-body">
+            <div class="ctrl-inline">
+              <span>面板主色</span>
+              <div style="display:flex;gap:5px;align-items:center">
+                <button class="mini-btn" id="btnMatchWpColor">取壁纸色</button>
+                <input type="color" id="colPanelAccent" />
+              </div>
+            </div>
+            <div class="ctrl-inline">
+              <span>输入框底色</span>
+              <input type="color" id="colPanelInputBg" />
+            </div>
+            <div class="ctrl-inline">
+              <span>面板字体</span>
+              <select class="select" id="selPanelFont" style="width:130px">
+                <option value="system">系统默认</option>
+                <option value="'Microsoft YaHei UI', sans-serif">微软雅黑</option>
+                <option value="'Cascadia Mono', Consolas, monospace">等宽代码体</option>
+                <option value="'Segoe UI', sans-serif">Segoe UI</option>
+              </select>
+            </div>
+            <div class="ctrl">
+              <div class="ctrl-head">
+                <span>卡片不透明度</span>
+                <span class="ctrl-val" id="valSurfaceAlpha">82%</span>
+              </div>
+              <input type="range" id="rngSurfaceAlpha" min="45" max="100" step="1" />
+            </div>
+          </div>
+        </details>
+
+        <div class="status-foot" id="companionStatus">正在检查伴侣状态...</div>
+      </aside>
+
+      <!-- Right Main Area: Wallpaper Gallery -->
+      <main class="gallery-pane">
+        <div class="gallery-toolbar">
+          <div class="search-row">
+            <input class="input" id="searchInput" type="text" placeholder="搜索 Wallpaper Engine 壁纸（Video / 3D Scene / Web）..." />
+            <button class="mini-btn" id="btnRescan">重扫</button>
+          </div>
+          <div class="filter-row" id="filterRow">
+            <button class="chip active" data-filter="all">全部 <span id="cntAll"></span></button>
+            <button class="chip" data-filter="video">视频 <span id="cntVideo"></span></button>
+            <button class="chip" data-filter="scene">3D 场景 <span id="cntScene"></span></button>
+            <button class="chip" data-filter="web">网页 <span id="cntWeb"></span></button>
+            <button class="chip" data-filter="fav">DSH 收藏</button>
+            <button class="chip" data-filter="custom">轮播池 <span id="cntCustom"></span></button>
+          </div>
+        </div>
+
+        <div class="grid-scroll">
+          <div class="wp-grid" id="wpGrid"></div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    const api = {
+      async get(url) {
+        const res = await window.sidecar.fetch(url, { method: 'GET' });
+        return res.json();
+      },
+      async post(url, body) {
+        const res = await window.sidecar.fetch(url, {
+          method: 'POST',
+          body: JSON.stringify(body || {}),
+        });
+        return res.json();
+      },
+    };
+
+    let state = null;
+    let library = [];
+    let currentFilter = 'all';
+    let saveTimer = null;
+    let sidebarOpen = window.innerWidth >= 620;
+    let activeDragUntil = 0;
+    let liveInflight = false;
+    let pendingLivePatch = null;
+    let lastLiveSentAt = 0;
+
+    function flushLiveQueue() {
+      if (liveInflight || !pendingLivePatch) return;
+      const now = performance.now();
+      const wait = Math.max(0, 18 - (now - lastLiveSentAt));
+      if (wait > 0) {
+        setTimeout(flushLiveQueue, wait);
+        return;
+      }
+      const payload = pendingLivePatch;
+      pendingLivePatch = null;
+      liveInflight = true;
+      lastLiveSentAt = performance.now();
+      api.post('/api/live', payload)
+        .catch(() => {})
+        .finally(() => {
+          liveInflight = false;
+          if (pendingLivePatch) flushLiveQueue();
+        });
+    }
+
+    function streamLive(patch) {
+      if (!state) return;
+      activeDragUntil = Date.now() + 500;
+      state.config = { ...state.config, ...patch };
+      applyPanelStyle(state.config);
+      updateControlLabels(state.config);
+      pendingLivePatch = pendingLivePatch ? { ...pendingLivePatch, ...patch } : { ...patch };
+      flushLiveQueue();
+    }
+
+    function commitConfig(patch) {
+      activeDragUntil = 0;
+      patchConfig(patch, true);
+    }
+
+    function updateControlLabels(config) {
+      document.getElementById('valTranslucency').textContent = `${config.windowTranslucency}%`;
+      document.getElementById('valBlur').textContent = `${config.backdropBlur}px`;
+      document.getElementById('valDim').textContent = `${config.backdropDim}%`;
+      document.getElementById('valBrightness').textContent = `${config.brightness}%`;
+      document.getElementById('valConSat').textContent = `${config.contrast}% / ${config.saturate}%`;
+      document.getElementById('valVolume').textContent = `${config.videoVolume}%`;
+      document.getElementById('valHudSize').textContent = `${config.hudSize}px`;
+      document.getElementById('valSurfaceAlpha').textContent = `${config.panelSurfaceOpacity}%`;
+    }
+
+    function fmtTokens(n) {
+      n = Number(n) || 0;
+      if (n >= 1000000) return (n / 1000000).toFixed(2) + 'M';
+      if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+      return String(n);
+    }
+
+    function fmtCountdown(sec) {
+      sec = Math.max(0, Math.round(Number(sec) || 0));
+      const m = Math.floor(sec / 60);
+      const s = sec % 60;
+      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+
+    function syncSidebarUi() {
+      const sb = document.getElementById('sidebar');
+      const scrim = document.getElementById('drawerScrim');
+      const btn = document.getElementById('btnToggleSidebar');
+      sb.classList.toggle('collapsed', !sidebarOpen);
+      scrim.classList.toggle('open', sidebarOpen);
+      btn.classList.toggle('active', sidebarOpen);
+    }
+
+    function applyPanelStyle(cfg) {
+      const root = document.documentElement.style;
+      root.setProperty('--accent', cfg.panelAccent || '#F1717F');
+      root.setProperty('--warn', cfg.hudWarnColor || '#F59E0B');
+      root.setProperty('--danger', cfg.hudDangerColor || '#EF4444');
+      root.setProperty('--input-bg', cfg.panelInputBg || '#161b26');
+      root.setProperty('--surface-alpha', String((cfg.panelSurfaceOpacity || 82) / 100));
+      root.setProperty(
+        '--ui-font',
+        cfg.panelFont === 'system'
+          ? '-apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif'
+          : cfg.panelFont,
+      );
+    }
+
+    function renderState() {
+      if (!state) return;
+      const { config, telemetry, companion, activeWallpaper, rotation, librarySummary } = state;
+      applyPanelStyle(config);
+
+      // Hero ring
+      const active = telemetry.active || {};
+      const pct = Math.max(0, Math.min(100, Number(active.percent) || 0));
+      const circum = 2 * Math.PI * 18;
+      const arc = document.getElementById('heroRingArc');
+      arc.style.strokeDasharray = String(circum.toFixed(2));
+      arc.style.strokeDashoffset = String((circum * (1 - pct / 100)).toFixed(2));
+      arc.style.stroke =
+        pct >= 85 ? config.hudDangerColor : pct >= 65 ? config.hudWarnColor : config.hudAccent;
+
+      document.getElementById('heroPct').textContent = `${Math.round(pct)}%`;
+      const modeLabel = activeWallpaper
+        ? ({ video: 'VIDEO', scene: '3D SCENE', web: 'WEB', image: 'IMAGE' }[activeWallpaper.renderMode] || 'WP')
+        : '';
+      document.getElementById('heroWpTitle').textContent = activeWallpaper
+        ? `[${modeLabel}] ${activeWallpaper.title}`
+        : active.title || 'Wallpaper Studio';
+      document.getElementById('heroTokens').textContent =
+        `${fmtTokens(active.contextTokens)} / ${fmtTokens(telemetry.limitTokens)}`;
+      document.getElementById('heroCache').textContent = `${active.cacheHitRate || 0}%`;
+
+      if (rotation && rotation.enabled) {
+        document.getElementById('heroRotInfo').innerHTML =
+          `轮播 <strong>${fmtCountdown(rotation.remainingSec)}</strong>`;
+      } else {
+        document.getElementById('heroRotInfo').textContent = active.model || '';
+      }
+
+      if (activeWallpaper && activeWallpaper.hasPreview) {
+        document.getElementById('bgLayer').style.backgroundImage =
+          `url('/api/preview?id=${encodeURIComponent(activeWallpaper.id)}')`;
+      }
+
+      document.getElementById('btnToggleBackdrop').classList.toggle('active', !!config.backdropEnabled);
+      document.getElementById('btnToggleHud').classList.toggle('active', !!config.hudEnabled);
+
+      document.querySelectorAll('#limitGroup .seg-btn').forEach((btn) => {
+        btn.classList.toggle('active', Number(btn.dataset.limit) === Number(config.contextLimit));
+      });
+
+      // Counts
+      const c = librarySummary?.counts || {};
+      document.getElementById('cntAll').textContent = c.total ? `(${c.total})` : '';
+      document.getElementById('cntVideo').textContent = c.video ? `(${c.video})` : '';
+      document.getElementById('cntScene').textContent = c.scene ? `(${c.scene})` : '';
+      document.getElementById('cntWeb').textContent = c.web ? `(${c.web})` : '';
+      document.getElementById('cntCustom').textContent = `(${(config.rotationCustomIds || []).length})`;
+
+      // Sidebar controls (never yank slider thumbs while user is actively dragging)
+      if (Date.now() > activeDragUntil) {
+        document.getElementById('rngTranslucency').value = config.windowTranslucency;
+        document.getElementById('rngBlur').value = config.backdropBlur;
+        document.getElementById('rngDim').value = config.backdropDim;
+        document.getElementById('rngBrightness').value = config.brightness;
+        document.getElementById('rngContrast').value = config.contrast;
+        document.getElementById('rngSaturate').value = config.saturate;
+        document.getElementById('rngVolume').value = config.videoVolume;
+        document.getElementById('rngHudSize').value = config.hudSize;
+        document.getElementById('colHudAccent').value = config.hudAccent;
+        document.getElementById('colHudWarn').value = config.hudWarnColor;
+        document.getElementById('colHudDanger').value = config.hudDangerColor;
+        document.getElementById('colPanelAccent').value = config.panelAccent;
+        document.getElementById('colPanelInputBg').value = config.panelInputBg;
+        document.getElementById('rngSurfaceAlpha').value = config.panelSurfaceOpacity;
+      }
+      updateControlLabels(config);
+      document.getElementById('selSceneFps').value = String(config.sceneFps);
+      document.getElementById('chkVideoMuted').checked = !!config.videoMuted;
+      document.getElementById('volWrap').style.opacity = config.videoMuted ? '0.45' : '1';
+
+      // Rotation controls
+      document.getElementById('chkRotEnabled').checked = !!config.rotationEnabled;
+      document.getElementById('selRotOrder').value = config.rotationOrder;
+      document.getElementById('selRotSource').value = config.rotationSource;
+      document.getElementById('valRotInterval').textContent = `${config.rotationIntervalMin} 分钟`;
+      const numEl = document.getElementById('numRotMin');
+      if (document.activeElement !== numEl) numEl.value = config.rotationIntervalMin;
+      document.querySelectorAll('#rotPresets .mini-btn').forEach((b) => {
+        b.classList.toggle('active', Number(b.dataset.min) === Number(config.rotationIntervalMin));
+      });
+      const rotStatus = document.getElementById('rotStatusText');
+      if (rotation && rotation.enabled) {
+        rotStatus.innerHTML = `池内 <strong>${rotation.poolCount}</strong> 张 · 下次 <strong>${fmtCountdown(rotation.remainingSec)}</strong>`;
+      } else {
+        rotStatus.innerHTML = `轮播已暂停 · 当前池 <strong>${rotation ? rotation.poolCount : 0}</strong> 张`;
+      }
+
+      // HUD & Panel selects
+      document.getElementById('chkHudShowPct').checked = !!config.hudShowPercent;
+      document.getElementById('selHudFont').value = config.hudFont;
+      document.getElementById('selPanelFont').value = config.panelFont;
+
+      // Sessions dropdown
+      const sel = document.getElementById('selSession');
+      const opts = ['<option value="">自动跟随最新活跃会话</option>'];
+      for (const s of telemetry.sessions || []) {
+        const label = `${s.title} (${Math.round(s.percent)}%)`;
+        opts.push(`<option value="${s.id}">${label.replace(/</g, '&lt;')}</option>`);
+      }
+      sel.innerHTML = opts.join('');
+      sel.value = config.pinnedConvId || '';
+
+      // Companion footer
+      const foot = document.getElementById('companionStatus');
+      const assetsTag = librarySummary?.weAssetsAvailable ? 'WE 官方素材已挂载' : '程序化素材兜底';
+      if (companion.error) {
+        foot.innerHTML = `<span class="err">● 伴侣错误: ${companion.error.slice(0, 80)}</span>`;
+      } else if (companion.running) {
+        foot.innerHTML = `<span class="ok">● WebView2 贴背引擎在线</span> (PID ${companion.pid})<br/>WebWallGL 全类型引擎 · ${assetsTag}`;
+      } else {
+        foot.innerHTML = `○ 桌面伴侣待机 · WebWallGL 全类型就绪`;
+      }
+    }
+
+    function renderLibrary() {
+      const q = (document.getElementById('searchInput').value || '').trim().toLowerCase();
+      const grid = document.getElementById('wpGrid');
+      const activeId = state?.config?.wallpaperId || '';
+      const customSet = new Set(state?.config?.rotationCustomIds || []);
+
+      const filtered = library.filter((it) => {
+        if (currentFilter === 'video' && it.renderMode !== 'video') return false;
+        if (currentFilter === 'scene' && it.renderMode !== 'scene') return false;
+        if (currentFilter === 'web' && it.renderMode !== 'web') return false;
+        if (currentFilter === 'fav' && !it.isDshFavorite && !it.isDshActive) return false;
+        if (currentFilter === 'custom' && !customSet.has(it.id)) return false;
+        if (q) {
+          const hay = `${it.title} ${(it.tags || []).join(' ')} ${it.id}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+
+      if (!filtered.length) {
+        grid.innerHTML =
+          '<div style="grid-column:1/-1;color:var(--muted-fg);padding:26px;text-align:center">当前筛选下没有匹配的壁纸</div>';
+        return;
+      }
+
+      grid.innerHTML = filtered
+        .map((it) => {
+          const selected = it.id === activeId ? ' selected' : '';
+          const mode = it.renderMode || 'image';
+          const badgeTxt = { video: 'VIDEO', scene: '3D SCENE', web: 'WEB', image: 'IMG' }[mode] || 'WP';
+          const inPool = customSet.has(it.id);
+          const safeTitle = String(it.title || it.id).replace(/[<>&"]/g, (c) => ({
+            '<': '&lt;',
+            '>': '&gt;',
+            '&': '&amp;',
+            '"': '&quot;',
+          }[c]));
+          const imgSrc = it.hasPreview ? `/api/preview?id=${encodeURIComponent(it.id)}` : '';
+          return `
+            <div class="wp-card${selected}" data-id="${it.id}">
+              <img class="wp-thumb" loading="lazy" src="${imgSrc}" alt="${safeTitle}" />
+              <span class="wp-badge ${mode}">${badgeTxt}</span>
+              <button class="pool-toggle${inPool ? ' in-pool' : ''}" data-pool-id="${it.id}" title="${inPool ? '从自定义轮播池移除' : '加入自定义轮播池'}">${inPool ? '✓' : '+'}</button>
+              <div class="wp-name" title="${safeTitle}">${safeTitle}</div>
+            </div>
+          `;
+        })
+        .join('');
+
+      grid.querySelectorAll('.wp-card').forEach((card) => {
+        card.addEventListener('click', (e) => {
+          if (e.target.closest('.pool-toggle')) return;
+          patchConfig({ wallpaperId: card.dataset.id, backdropEnabled: true }, true);
+        });
+      });
+
+      grid.querySelectorAll('.pool-toggle').forEach((btn) => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const id = btn.dataset.poolId;
+          const res = await api.post('/api/rotation/toggle-item', { id });
+          if (res && res.ok && state) {
+            state.config.rotationCustomIds = res.rotationCustomIds;
+            state.rotation = res.rotation;
+            renderState();
+            renderLibrary();
+          }
+        });
+      });
+    }
+
+    function patchConfig(patch, immediate = false) {
+      if (!state) return;
+      state.config = { ...state.config, ...patch };
+      renderState();
+      if (patch.wallpaperId !== undefined) renderLibrary();
+
+      const run = async () => {
+        const res = await api.post('/api/config', patch);
+        if (res && res.config) {
+          state.config = res.config;
+          state.telemetry = res.telemetry;
+          state.companion = res.companion;
+          if (res.rotation) state.rotation = res.rotation;
+          if (res.activeWallpaper) state.activeWallpaper = res.activeWallpaper;
+          renderState();
+        }
+      };
+
+      clearTimeout(saveTimer);
+      if (immediate) run();
+      else saveTimer = setTimeout(run, 100);
+    }
+
+    async function triggerNextWallpaper() {
+      const res = await api.post('/api/rotation/next');
+      if (res && res.config) {
+        state.config = res.config;
+        state.telemetry = res.telemetry;
+        state.companion = res.companion;
+        state.rotation = res.rotation;
+        if (res.activeWallpaper) state.activeWallpaper = res.activeWallpaper;
+        renderState();
+        renderLibrary();
+      }
+    }
+
+    // Wire sidebar toggle
+    document.getElementById('btnToggleSidebar').addEventListener('click', () => {
+      sidebarOpen = !sidebarOpen;
+      syncSidebarUi();
+    });
+    document.getElementById('drawerScrim').addEventListener('click', () => {
+      sidebarOpen = false;
+      syncSidebarUi();
+    });
+
+    // Top bar actions
+    document.getElementById('btnToggleBackdrop').addEventListener('click', () => {
+      if (state) patchConfig({ backdropEnabled: !state.config.backdropEnabled }, true);
+    });
+    document.getElementById('btnToggleHud').addEventListener('click', () => {
+      if (state) patchConfig({ hudEnabled: !state.config.hudEnabled }, true);
+    });
+    document.getElementById('btnNextWp').addEventListener('click', triggerNextWallpaper);
+    document.getElementById('btnRotNextSide').addEventListener('click', triggerNextWallpaper);
+    document.getElementById('btnRestoreOpacity').addEventListener('click', async () => {
+      const res = await api.post('/api/companion/restore');
+      if (res && res.config) {
+        state.config = res.config;
+        state.companion = res.companion;
+        if (res.rotation) state.rotation = res.rotation;
+        renderState();
+      }
+    });
+    document.querySelectorAll('#limitGroup .seg-btn').forEach((btn) => {
+      btn.addEventListener('click', () => patchConfig({ contextLimit: Number(btn.dataset.limit) }, true));
+    });
+
+    // Search & filters
+    document.getElementById('searchInput').addEventListener('input', renderLibrary);
+    document.getElementById('btnRescan').addEventListener('click', () => loadLibrary(true));
+    document.querySelectorAll('#filterRow .chip').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        document.querySelectorAll('#filterRow .chip').forEach((c) => c.classList.remove('active'));
+        chip.classList.add('active');
+        currentFilter = chip.dataset.filter;
+        renderLibrary();
+      });
+    });
+
+    // Visual sliders: continuous 50Hz live streaming while dragging, persist on release
+    function bindLiveRange(id, makePatch) {
+      const el = document.getElementById(id);
+      el.addEventListener('input', (e) => streamLive(makePatch(e)));
+      el.addEventListener('change', (e) => commitConfig(makePatch(e)));
+    }
+    bindLiveRange('rngTranslucency', (e) => ({ windowTranslucency: Number(e.target.value) }));
+    bindLiveRange('rngBlur', (e) => ({ backdropBlur: Number(e.target.value) }));
+    bindLiveRange('rngDim', (e) => ({ backdropDim: Number(e.target.value) }));
+    bindLiveRange('rngBrightness', (e) => ({ brightness: Number(e.target.value) }));
+    bindLiveRange('rngContrast', (e) => ({ contrast: Number(e.target.value) }));
+    bindLiveRange('rngSaturate', (e) => ({ saturate: Number(e.target.value) }));
+    document.getElementById('selSceneFps').addEventListener('change', (e) => patchConfig({ sceneFps: Number(e.target.value) }, true));
+    document.getElementById('chkVideoMuted').addEventListener('change', (e) => patchConfig({ videoMuted: e.target.checked }, true));
+    bindLiveRange('rngVolume', (e) => ({ videoVolume: Number(e.target.value), videoMuted: false }));
+
+    // Rotation controls
+    document.getElementById('chkRotEnabled').addEventListener('change', (e) => patchConfig({ rotationEnabled: e.target.checked }, true));
+    document.getElementById('selRotOrder').addEventListener('change', (e) => patchConfig({ rotationOrder: e.target.value }, true));
+    document.getElementById('selRotSource').addEventListener('change', (e) => patchConfig({ rotationSource: e.target.value }, true));
+    document.querySelectorAll('#rotPresets .mini-btn').forEach((b) => {
+      b.addEventListener('click', () => patchConfig({ rotationIntervalMin: Number(b.dataset.min) }, true));
+    });
+    document.getElementById('numRotMin').addEventListener('change', (e) => {
+      const v = Math.max(1, Math.min(240, Number(e.target.value) || 15));
+      patchConfig({ rotationIntervalMin: v }, true);
+    });
+
+    // HUD controls
+    bindLiveRange('rngHudSize', (e) => ({ hudSize: Number(e.target.value) }));
+    document.getElementById('chkHudShowPct').addEventListener('change', (e) => patchConfig({ hudShowPercent: e.target.checked }, true));
+    bindLiveRange('colHudAccent', (e) => ({ hudAccent: e.target.value }));
+    bindLiveRange('colHudWarn', (e) => ({ hudWarnColor: e.target.value }));
+    bindLiveRange('colHudDanger', (e) => ({ hudDangerColor: e.target.value }));
+    document.getElementById('selHudFont').addEventListener('change', (e) => patchConfig({ hudFont: e.target.value }, true));
+    document.getElementById('selSession').addEventListener('change', (e) => patchConfig({ pinnedConvId: e.target.value }, true));
+    document.getElementById('btnResetHud').addEventListener('click', async () => {
+      await api.post('/api/hud/reset-pos');
+      await loadState();
+    });
+
+    // Panel own styling
+    bindLiveRange('colPanelAccent', (e) => ({ panelAccent: e.target.value }));
+    bindLiveRange('colPanelInputBg', (e) => ({ panelInputBg: e.target.value }));
+    document.getElementById('selPanelFont').addEventListener('change', (e) => patchConfig({ panelFont: e.target.value }, true));
+    bindLiveRange('rngSurfaceAlpha', (e) => ({ panelSurfaceOpacity: Number(e.target.value) }));
+    document.getElementById('btnMatchWpColor').addEventListener('click', () => {
+      const col = state?.activeWallpaper?.schemeColor;
+      if (col) patchConfig({ panelAccent: col, hudAccent: col }, true);
+    });
+
+    async function loadState() {
+      state = await api.get('/api/state');
+      renderState();
+    }
+
+    async function loadLibrary(force = false) {
+      const data = await api.get(`/api/library${force ? '?force=1' : ''}`);
+      library = data.items || [];
+      renderLibrary();
+    }
+
+    syncSidebarUi();
+    (async () => {
+      try {
+        const cid = new URLSearchParams(window.location.search).get('conversationId');
+        if (cid) await api.post('/api/active-conv', { conversationId: cid });
+      } catch {}
+      await loadState();
+      await loadLibrary(false);
+      setInterval(() => {
+        loadState().catch(() => {});
+      }, 1000);
+    })();
+  </script>
+</body>
+</html>

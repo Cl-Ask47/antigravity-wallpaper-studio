@@ -1,0 +1,6 @@
+{
+  "name": "wallpaper_studio_sidecar",
+  "version": "0.5.0",
+  "type": "module",
+  "description": "Antigravity sidecar UI for Wallpaper Engine backdrop and minimalist context usage ring HUD"
+}

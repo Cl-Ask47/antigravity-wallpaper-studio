@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AGY_WALLPAPER_STUDIO_STAGE</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      user-select: none;
+    }
+    #mediaRoot {
+      position: fixed;
+      inset: 0;
+      overflow: hidden;
+      background: #000;
+      will-change: filter, transform;
+    }
+
+    .slot {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      z-index: 1;
+      transition: opacity 0.48s cubic-bezier(0.22, 1, 0.36, 1);
+      will-change: opacity;
+      overflow: hidden;
+    }
+    .slot.under {
+      opacity: 1;
+      z-index: 1;
+    }
+    .slot.front {
+      z-index: 2;
+    }
+    .slot.front.shown {
+      opacity: 1;
+    }
+
+    .slot-preview {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      opacity: 0;
+      transition: opacity 0.25s ease;
+      z-index: 1;
+    }
+    .slot-preview.visible { opacity: 1; }
+
+    .slot-video {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: none;
+      z-index: 2;
+    }
+
+    .slot-wwgl {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: none;
+      z-index: 3;
+      overflow: hidden;
+    }
+    .slot-wwgl iframe.web-frame {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      border: none;
+      background: transparent;
+    }
+
+    #scrim {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      background: #000;
+      opacity: 0.22;
+      pointer-events: none;
+    }
+  </style>
+  <script src="/engine/webwallgl.global.min.js"></script>
+</head>
+<body>
+  <div id="mediaRoot">
+    <div class="slot" id="slotA">
+      <img class="slot-preview" alt="" />
+      <video class="slot-video" autoplay loop playsinline muted></video>
+      <div class="slot-wwgl"></div>
+    </div>
+    <div class="slot" id="slotB">
+      <img class="slot-preview" alt="" />
+      <video class="slot-video" autoplay loop playsinline muted></video>
+      <div class="slot-wwgl"></div>
+    </div>
+  </div>
+  <div id="scrim"></div>
+
+  <script>
+    const mediaRoot = document.getElementById('mediaRoot');
+    const scrim = document.getElementById('scrim');
+
+    function makeSlotObj(el) {
+      return {
+        el,
+        preview: el.querySelector('.slot-preview'),
+        vid: el.querySelector('.slot-video'),
+        wwgl: el.querySelector('.slot-wwgl'),
+        sceneInst: null,
+        cleanupTimer: null,
+      };
+    }
+
+    const slots = [
+      makeSlotObj(document.getElementById('slotA')),
+      makeSlotObj(document.getElementById('slotB')),
+    ];
+
+    let activeIdx = -1; // index of currently visible slot
+    let currentKey = '';
+    let loadSeq = 0;
+
+    function clearSlot(slot) {
+      if (slot.cleanupTimer) {
+        clearTimeout(slot.cleanupTimer);
+        slot.cleanupTimer = null;
+      }
+      if (slot.sceneInst) {
+        try { slot.sceneInst.release(); } catch {}
+        try { slot.sceneInst.destroy && slot.sceneInst.destroy(); } catch {}
+        slot.sceneInst = null;
+      }
+      slot.wwgl.innerHTML = '';
+      slot.wwgl.style.display = 'none';
+
+      try { slot.vid.pause(); } catch {}
+      slot.vid.onplaying = null;
+      slot.vid.oncanplay = null;
+      slot.vid.removeAttribute('src');
+      try { slot.vid.load(); } catch {}
+      slot.vid.style.display = 'none';
+
+      slot.preview.classList.remove('visible');
+      slot.preview.removeAttribute('src');
+    }
+
+    function applyVisualParams(s) {
+      const blur = Math.max(0, Math.min(24, Number(s.backdropBlur) || 0));
+      const bri = Math.max(40, Math.min(160, Number(s.brightness) || 100));
+      const con = Math.max(50, Math.min(160, Number(s.contrast) || 100));
+      const sat = Math.max(0, Math.min(200, Number(s.saturate) || 100));
+      const dim = Math.max(0, Math.min(80, Number(s.backdropDim) || 0));
+
+      const filters = [];
+      if (blur > 0) filters.push(`blur(${blur}px)`);
+      if (bri !== 100) filters.push(`brightness(${bri}%)`);
+      if (con !== 100) filters.push(`contrast(${con}%)`);
+      if (sat !== 100) filters.push(`saturate(${sat}%)`);
+      mediaRoot.style.filter = filters.join(' ');
+      mediaRoot.style.transform = blur > 0 ? `scale(${(1 + blur * 0.004).toFixed(3)})` : '';
+      scrim.style.opacity = String((dim / 100).toFixed(3));
+
+      const muted = s.videoMuted !== false;
+      const vol = muted ? 0 : Math.max(0, Math.min(1, (Number(s.videoVolume) || 0) / 100));
+      for (const slot of slots) {
+        slot.vid.muted = muted;
+        slot.vid.volume = vol;
+        if (slot.sceneInst && typeof slot.sceneInst.setVolume === 'function') {
+          try { slot.sceneInst.setVolume(vol); } catch {}
+        }
+      }
+    }
+
+    function encodeRelPath(rel) {
+      return String(rel || '')
+        .split('/')
+        .filter(Boolean)
+        .map((seg) => encodeURIComponent(seg))
+        .join('/');
+    }
+
+    function preloadImg(imgEl, url, timeoutMs = 1200) {
+      return new Promise((resolve) => {
+        if (!url) return resolve(false);
+        let done = false;
+        const finish = (ok) => {
+          if (done) return;
+          done = true;
+          clearTimeout(t);
+          resolve(ok);
+        };
+        const t = setTimeout(() => finish(false), timeoutMs);
+        imgEl.onload = () => finish(true);
+        imgEl.onerror = () => finish(false);
+        imgEl.src = url;
+        if (imgEl.complete && imgEl.naturalWidth > 0) finish(true);
+      });
+    }
+
+    function commitCrossfade(nextIdx, seq) {
+      if (seq !== loadSeq) return;
+      const prevIdx = activeIdx;
+      const nextSlot = slots[nextIdx];
+      const prevSlot = prevIdx >= 0 && prevIdx !== nextIdx ? slots[prevIdx] : null;
+
+      if (prevSlot) {
+        prevSlot.el.classList.remove('front', 'shown');
+        prevSlot.el.classList.add('under');
+      }
+
+      nextSlot.el.classList.remove('under');
+      nextSlot.el.classList.add('front');
+      // Force layout before triggering opacity transition
+      void nextSlot.el.offsetWidth;
+      requestAnimationFrame(() => {
+        if (seq !== loadSeq) return;
+        nextSlot.el.classList.add('shown');
+      });
+
+      activeIdx = nextIdx;
+
+      if (prevSlot) {
+        if (prevSlot.cleanupTimer) clearTimeout(prevSlot.cleanupTimer);
+        prevSlot.cleanupTimer = setTimeout(() => {
+          if (activeIdx !== prevIdx) {
+            prevSlot.el.classList.remove('under', 'front', 'shown');
+            clearSlot(prevSlot);
+          }
+        }, 560);
+      }
+    }
+
+    async function loadWallpaper(s) {
+      const seq = ++loadSeq;
+
+      if (!s.wallpaperId || !s.backdropEnabled) {
+        for (const sl of slots) {
+          sl.el.classList.remove('under', 'front', 'shown');
+          clearSlot(sl);
+        }
+        activeIdx = -1;
+        return;
+      }
+
+      const nextIdx = activeIdx === 0 ? 1 : 0;
+      const slot = slots[nextIdx];
+      slot.el.classList.remove('under', 'front', 'shown');
+      clearSlot(slot);
+
+      const wpBase = `/wp/${encodeURIComponent(s.wallpaperId)}`;
+      const previewUrl = s.hasPreview ? `/preview/${encodeURIComponent(s.wallpaperId)}` : '';
+      const mode = s.renderMode || 'image';
+
+      if (mode === 'video' && s.entryFile) {
+        // Prepare preview silently in case video takes > 900ms to decode first frame
+        const prevReady = preloadImg(slot.preview, previewUrl, 700);
+        slot.vid.style.display = 'block';
+        slot.vid.muted = s.videoMuted !== false;
+        slot.vid.volume = slot.vid.muted ? 0 : Math.max(0, Math.min(1, (Number(s.videoVolume) || 0) / 100));
+
+        let revealed = false;
+        const reveal = () => {
+          if (revealed || seq !== loadSeq) return;
+          revealed = true;
+          commitCrossfade(nextIdx, seq);
+        };
+
+        const videoReady = new Promise((resolve) => {
+          const t = setTimeout(() => resolve(false), 1100);
+          slot.vid.onplaying = () => {
+            clearTimeout(t);
+            slot.preview.classList.remove('visible');
+            resolve(true);
+          };
+          slot.vid.oncanplay = () => {
+            slot.vid.play().catch(() => {});
+          };
+        });
+
+        slot.vid.src = `${wpBase}/${encodeRelPath(s.entryFile)}`;
+        slot.vid.play().catch(() => {});
+
+        const ok = await videoReady;
+        if (seq !== loadSeq) return;
+        if (!ok) {
+          await prevReady;
+          if (seq !== loadSeq) return;
+          if (previewUrl) slot.preview.classList.add('visible');
+        }
+        reveal();
+        return;
+      }
+
+      if (mode === 'web' && s.entryFile) {
+        if (previewUrl) {
+          await preloadImg(slot.preview, previewUrl, 600);
+          if (seq !== loadSeq) return;
+          slot.preview.classList.add('visible');
+        }
+        slot.wwgl.style.display = 'block';
+        const iframe = document.createElement('iframe');
+        iframe.className = 'web-frame';
+        iframe.allow = 'autoplay';
+        const frameLoaded = new Promise((resolve) => {
+          const t = setTimeout(() => resolve(false), 1200);
+          iframe.onload = () => {
+            clearTimeout(t);
+            resolve(true);
+          };
+        });
+        iframe.src = `${wpBase}/${encodeRelPath(s.entryFile)}`;
+        slot.wwgl.appendChild(iframe);
+
+        const ok = await frameLoaded;
+        if (seq !== loadSeq) return;
+        if (ok) slot.preview.classList.remove('visible');
+        commitCrossfade(nextIdx, seq);
+        return;
+      }
+
+      if (mode === 'scene' && globalThis.WebWallGL && globalThis.WebWallGL.createScene) {
+        if (previewUrl) {
+          await preloadImg(slot.preview, previewUrl, 600);
+          if (seq !== loadSeq) return;
+          slot.preview.classList.add('visible');
+        }
+        // Start crossfading into preview immediately if scene takes > 450ms,
+        // so switching feels responsive and smooth with zero black flash.
+        let revealed = false;
+        const earlyTimer = setTimeout(() => {
+          if (!revealed && seq === loadSeq) {
+            revealed = true;
+            commitCrossfade(nextIdx, seq);
+          }
+        }, 450);
+
+        slot.wwgl.style.display = 'block';
+        try {
+          const { createScene, httpSource } = globalThis.WebWallGL;
+          const vol = s.videoMuted !== false ? 0 : Math.max(0, Math.min(1, (Number(s.videoVolume) || 0) / 100));
+          const inst = createScene(slot.wwgl, {
+            fit: 'cover',
+            fps: Number(s.sceneFps) || 30,
+            volume: vol,
+          });
+          slot.sceneInst = inst;
+          inst.on && inst.on('error', () => {
+            if (seq === loadSeq && previewUrl) {
+              slot.preview.classList.add('visible');
+              slot.wwgl.style.display = 'none';
+            }
+          });
+          await inst.load(httpSource(wpBase));
+          clearTimeout(earlyTimer);
+          if (seq !== loadSeq) {
+            try { inst.release(); } catch {}
+            return;
+          }
+          setTimeout(() => {
+            if (seq !== loadSeq || slot.sceneInst !== inst) return;
+            slot.preview.classList.remove('visible');
+            if (!revealed) {
+              revealed = true;
+              commitCrossfade(nextIdx, seq);
+            }
+          }, 120);
+        } catch {
+          clearTimeout(earlyTimer);
+          if (seq === loadSeq) {
+            slot.wwgl.innerHTML = '';
+            slot.wwgl.style.display = 'none';
+            if (previewUrl) slot.preview.classList.add('visible');
+            if (!revealed) {
+              revealed = true;
+              commitCrossfade(nextIdx, seq);
+            }
+          }
+        }
+        return;
+      }
+
+      // Pure image wallpaper
+      const imgUrl = s.entryFile && mode === 'image'
+        ? `${wpBase}/${encodeRelPath(s.entryFile)}`
+        : previewUrl;
+      await preloadImg(slot.preview, imgUrl, 1200);
+      if (seq !== loadSeq) return;
+      slot.preview.classList.add('visible');
+      commitCrossfade(nextIdx, seq);
+    }
+
+    function handleStageState(s) {
+      if (!s || typeof s !== 'object') return;
+      applyVisualParams(s);
+      const key = `${s.backdropEnabled ? 1 : 0}|${s.wallpaperId || ''}|${s.renderMode || ''}|${s.entryFile || ''}|${s.sceneFps || 30}`;
+      if (key !== currentKey) {
+        currentKey = key;
+        loadWallpaper(s);
+      }
+    }
+
+    async function poll() {
+      try {
+        const res = await fetch('/stage-state', { cache: 'no-store' });
+        if (!res.ok) return;
+        handleStageState(await res.json());
+      } catch {}
+    }
+
+    function connectEvents() {
+      try {
+        const es = new EventSource('/stage-events');
+        es.onmessage = (ev) => {
+          try {
+            handleStageState(JSON.parse(ev.data));
+          } catch {}
+        };
+        es.onerror = () => {
+          try { es.close(); } catch {}
+          setTimeout(connectEvents, 1200);
+        };
+      } catch {}
+    }
+
+    poll();
+    connectEvents();
+    setInterval(poll, 1500);
+  </script>
+</body>
+</html>

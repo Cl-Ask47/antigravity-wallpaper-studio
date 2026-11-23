@@ -1,0 +1,21 @@
+{
+  "command": "node",
+  "args": ["main.mjs"],
+  "restart_policy": "always",
+  "display_name": "壁纸与上下文圆环",
+  "description": "Connect your local Steam Wallpaper Engine library as a zero-intrusion backdrop and show a minimalist real-time context usage ring HUD.",
+  "has_web_ui": true,
+  "agent_permissions": {
+    "allows_user_interactions": false
+  },
+  "ui_config": {
+    "display_name": "壁纸与上下文圆环",
+    "views": [
+      {
+        "path": "/",
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_AUX_PANE",
+        "title": "壁纸与圆环"
+      }
+    ]
+  }
+}

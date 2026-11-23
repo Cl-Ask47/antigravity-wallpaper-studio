@@ -1,0 +1,1293 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Web.Script.Serialization;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Media;
+using System.Windows.Media.Effects;
+using System.Windows.Media.Imaging;
+using System.Windows.Shapes;
+using System.Windows.Threading;
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.Wpf;
+using Microsoft.Win32;
+
+namespace WallpaperStudioCompanion
+{
+    public class CompanionState
+    {
+        public bool shutdown { get; set; }
+        public bool backdropEnabled { get; set; }
+        public bool hudEnabled { get; set; }
+        public string stageUrl { get; set; }
+        public string previewPath { get; set; }
+        public string mediaPath { get; set; }
+        public string mediaKind { get; set; }
+        public string wallpaperTitle { get; set; }
+        public int windowTranslucency { get; set; }
+        public int backdropBlur { get; set; }
+        public int backdropDim { get; set; }
+        public bool videoMuted { get; set; }
+        public int videoVolume { get; set; }
+        public int hudSize { get; set; }
+        public string hudAccent { get; set; }
+        public string hudWarnColor { get; set; }
+        public string hudDangerColor { get; set; }
+        public bool hudShowPercent { get; set; }
+        public string hudFont { get; set; }
+        public double contextPercent { get; set; }
+        public long contextTokens { get; set; }
+        public long contextLimit { get; set; }
+        public double cacheHitRate { get; set; }
+        public string sessionTitle { get; set; }
+        public string model { get; set; }
+        public int totalSteps { get; set; }
+    }
+
+    public class HudOffset
+    {
+        public int offsetX { get; set; }
+        public int offsetY { get; set; }
+    }
+
+    internal static class Native
+    {
+        public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct RECT
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+            public int Width { get { return Right - Left; } }
+            public int Height { get { return Bottom - Top; } }
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct POINT
+        {
+            public int X;
+            public int Y;
+        }
+
+        public const int GWL_EXSTYLE = -20;
+        public const int WS_EX_TRANSPARENT = 0x00000020;
+        public const int WS_EX_TOOLWINDOW = 0x00000080;
+        public const int WS_EX_LAYERED = 0x00080000;
+        public const int WS_EX_NOACTIVATE = 0x08000000;
+
+        public const uint LWA_ALPHA = 0x00000002;
+
+        public const uint SWP_NOSIZE = 0x0001;
+        public const uint SWP_NOMOVE = 0x0002;
+        public const uint SWP_NOZORDER = 0x0004;
+        public const uint SWP_NOACTIVATE = 0x0010;
+        public const uint SWP_SHOWWINDOW = 0x0040;
+        public const uint SWP_HIDEWINDOW = 0x0080;
+
+        public const uint GW_HWNDPREV = 3;
+        public static readonly IntPtr HWND_TOP = IntPtr.Zero;
+
+        public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+        public const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+        public const int DWMWCP_ROUND = 2;
+
+        [DllImport("user32.dll")]
+        public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+        [DllImport("user32.dll")]
+        public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+        [DllImport("user32.dll")]
+        public static extern bool GetCursorPos(out POINT lpPoint);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool SetLayeredWindowAttributes(IntPtr hwnd, uint crKey, byte bAlpha, uint dwFlags);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
+        [DllImport("dwmapi.dll")]
+        public static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out RECT pvAttribute, int cbAttribute);
+
+        [DllImport("dwmapi.dll")]
+        public static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
+
+        [DllImport("user32.dll")]
+        public static extern bool SetProcessDPIAware();
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr SetProcessDpiAwarenessContext(IntPtr value);
+
+        [DllImport("user32.dll")]
+        public static extern uint GetDpiForWindow(IntPtr hwnd);
+
+        public static void EnableDpiAwareness()
+        {
+            try
+            {
+                SetProcessDpiAwarenessContext(new IntPtr(-4));
+                return;
+            }
+            catch { }
+            try { SetProcessDPIAware(); } catch { }
+        }
+
+        public static bool GetVisibleBounds(IntPtr hwnd, out RECT rect)
+        {
+            try
+            {
+                if (DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, out rect, Marshal.SizeOf(typeof(RECT))) == 0)
+                {
+                    if (rect.Width > 0 && rect.Height > 0) return true;
+                }
+            }
+            catch { }
+            return GetWindowRect(hwnd, out rect);
+        }
+
+        public static double GetDpiScale(IntPtr hwnd)
+        {
+            try
+            {
+                uint dpi = GetDpiForWindow(hwnd);
+                if (dpi >= 72 && dpi <= 480) return dpi / 96.0;
+            }
+            catch { }
+            return 1.0;
+        }
+
+        public static List<IntPtr> FindAntigravityWindows()
+        {
+            HashSet<uint> pids = new HashSet<uint>();
+            try
+            {
+                Process[] procs = Process.GetProcessesByName("Antigravity");
+                for (int i = 0; i < procs.Length; i++)
+                {
+                    try { pids.Add((uint)procs[i].Id); } catch { }
+                    try { procs[i].Dispose(); } catch { }
+                }
+            }
+            catch { }
+
+            List<IntPtr> result = new List<IntPtr>();
+            if (pids.Count == 0) return result;
+
+            EnumWindows(delegate(IntPtr hWnd, IntPtr lParam)
+            {
+                uint pid;
+                GetWindowThreadProcessId(hWnd, out pid);
+                if (!pids.Contains(pid)) return true;
+                if (!IsWindowVisible(hWnd)) return true;
+                RECT r;
+                if (GetWindowRect(hWnd, out r) && r.Width >= 260 && r.Height >= 180)
+                {
+                    result.Add(hWnd);
+                }
+                return true;
+            }, IntPtr.Zero);
+
+            return result;
+        }
+
+        public static IntPtr PickPrimaryAntigravityWindow()
+        {
+            List<IntPtr> wins = FindAntigravityWindows();
+            if (wins.Count == 0) return IntPtr.Zero;
+            IntPtr fg = GetForegroundWindow();
+            for (int i = 0; i < wins.Count; i++)
+            {
+                if (wins[i] == fg) return wins[i];
+            }
+            IntPtr best = wins[0];
+            long bestArea = 0;
+            for (int i = 0; i < wins.Count; i++)
+            {
+                RECT r;
+                if (GetWindowRect(wins[i], out r))
+                {
+                    long area = (long)r.Width * r.Height;
+                    if (area > bestArea)
+                    {
+                        bestArea = area;
+                        best = wins[i];
+                    }
+                }
+            }
+            return best;
+        }
+
+        public static void SetWindowAlpha(IntPtr hwnd, byte alpha)
+        {
+            if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return;
+            try
+            {
+                int ex = GetWindowLong(hwnd, GWL_EXSTYLE);
+                if (alpha >= 255)
+                {
+                    if ((ex & WS_EX_LAYERED) != 0)
+                    {
+                        SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+                        SetWindowLong(hwnd, GWL_EXSTYLE, ex & ~WS_EX_LAYERED);
+                    }
+                }
+                else
+                {
+                    if ((ex & WS_EX_LAYERED) == 0)
+                    {
+                        SetWindowLong(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED);
+                    }
+                    SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA);
+                }
+            }
+            catch { }
+        }
+
+        public static void RestoreAllAntigravityWindows()
+        {
+            List<IntPtr> wins = FindAntigravityWindows();
+            for (int i = 0; i < wins.Count; i++)
+            {
+                SetWindowAlpha(wins[i], 255);
+            }
+        }
+    }
+
+    public class BackdropWindow : Window
+    {
+        private readonly Grid _fallbackHost;
+        private readonly Image _fallbackImage;
+        private readonly BlurEffect _fallbackBlur;
+        private readonly Rectangle _fallbackScrim;
+        private readonly WebView2 _webView;
+        private bool _wvReady = false;
+        private bool _wvInitStarted = false;
+        private string _wvError = "";
+        private string _desiredStageUrl = "";
+        private string _activeUrl = "";
+        private bool _playbackActive = false;
+        private string _fallbackPath = "";
+        private IntPtr _hwnd = IntPtr.Zero;
+
+        public IntPtr Handle { get { return _hwnd; } }
+        public bool WebViewReady { get { return _wvReady; } }
+        public string WebViewError { get { return _wvError; } }
+        public string ActiveUrl { get { return _activeUrl; } }
+
+        public BackdropWindow()
+        {
+            WindowStyle = WindowStyle.None;
+            ResizeMode = ResizeMode.NoResize;
+            ShowInTaskbar = false;
+            ShowActivated = false;
+            Background = Brushes.Black;
+            AllowsTransparency = false;
+            Left = -32000;
+            Top = -32000;
+            Width = 640;
+            Height = 400;
+
+            Grid root = new Grid();
+            root.Background = Brushes.Black;
+
+            _fallbackBlur = new BlurEffect();
+            _fallbackBlur.Radius = 0;
+            _fallbackBlur.RenderingBias = RenderingBias.Performance;
+
+            _fallbackHost = new Grid();
+            _fallbackHost.Effect = _fallbackBlur;
+
+            _fallbackImage = new Image();
+            _fallbackImage.Stretch = Stretch.UniformToFill;
+            RenderOptions.SetBitmapScalingMode(_fallbackImage, BitmapScalingMode.HighQuality);
+            _fallbackHost.Children.Add(_fallbackImage);
+
+            _fallbackScrim = new Rectangle();
+            _fallbackScrim.Fill = Brushes.Black;
+            _fallbackScrim.Opacity = 0.22;
+
+            _webView = new WebView2();
+            _webView.DefaultBackgroundColor = System.Drawing.Color.Black;
+            _webView.HorizontalAlignment = HorizontalAlignment.Stretch;
+            _webView.VerticalAlignment = VerticalAlignment.Stretch;
+            _webView.Focusable = false;
+            // Must remain Visible so WPF creates its HwndHost and EnsureCoreWebView2Async completes!
+            _webView.Visibility = Visibility.Visible;
+
+            root.Children.Add(_fallbackHost);
+            root.Children.Add(_fallbackScrim);
+            root.Children.Add(_webView);
+            Content = root;
+
+            SourceInitialized += delegate
+            {
+                _hwnd = new WindowInteropHelper(this).Handle;
+                int ex = Native.GetWindowLong(_hwnd, Native.GWL_EXSTYLE);
+                Native.SetWindowLong(
+                    _hwnd,
+                    Native.GWL_EXSTYLE,
+                    ex | Native.WS_EX_NOACTIVATE | Native.WS_EX_TOOLWINDOW);
+                try
+                {
+                    int pref = Native.DWMWCP_ROUND;
+                    Native.DwmSetWindowAttribute(_hwnd, Native.DWMWA_WINDOW_CORNER_PREFERENCE, ref pref, sizeof(int));
+                }
+                catch { }
+            };
+        }
+
+        public void StartWebViewInit()
+        {
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(delegate
+            {
+                InitWebViewAsync();
+            }));
+        }
+
+        private async void InitWebViewAsync()
+        {
+            if (_wvInitStarted) return;
+            _wvInitStarted = true;
+            try
+            {
+                string udf = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "agy_wallpaper_studio", "wv2_profile");
+                Directory.CreateDirectory(udf);
+                CoreWebView2EnvironmentOptions opts = new CoreWebView2EnvironmentOptions(
+                    "--autoplay-policy=no-user-gesture-required --disable-background-timer-throttling");
+                CoreWebView2Environment env = await CoreWebView2Environment.CreateAsync(null, udf, opts);
+                await _webView.EnsureCoreWebView2Async(env);
+                if (_webView.CoreWebView2 != null)
+                {
+                    _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+                    _webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
+                    _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
+                    _webView.CoreWebView2.Settings.IsZoomControlEnabled = false;
+                    _wvReady = true;
+                    _wvError = "";
+                    SyncWebViewNavigation();
+                }
+            }
+            catch (Exception ex)
+            {
+                _wvReady = false;
+                _wvError = ex.GetType().Name + ": " + ex.Message;
+                try
+                {
+                    Dispatcher.BeginInvoke(new Action(delegate
+                    {
+                        _webView.Visibility = Visibility.Collapsed;
+                    }));
+                }
+                catch { }
+            }
+        }
+
+        private void SyncWebViewNavigation()
+        {
+            if (!_wvReady || _webView.CoreWebView2 == null) return;
+            string target = (_playbackActive && !string.IsNullOrEmpty(_desiredStageUrl)) ? _desiredStageUrl : "about:blank";
+            if (_activeUrl != target)
+            {
+                _activeUrl = target;
+                try
+                {
+                    _webView.CoreWebView2.Navigate(target);
+                }
+                catch (Exception ex)
+                {
+                    _wvError = "Nav: " + ex.Message;
+                }
+            }
+        }
+
+        public void ApplyState(CompanionState s)
+        {
+            _desiredStageUrl = s.stageUrl ?? "";
+            _fallbackBlur.Radius = Math.Max(0, Math.Min(24, s.backdropBlur));
+            _fallbackScrim.Opacity = Math.Max(0.0, Math.Min(0.8, s.backdropDim / 100.0));
+
+            string p = !string.IsNullOrEmpty(s.previewPath) ? s.previewPath : (s.mediaKind == "image" ? (s.mediaPath ?? "") : "");
+            if (!string.Equals(_fallbackPath, p, StringComparison.OrdinalIgnoreCase))
+            {
+                _fallbackPath = p;
+                if (!string.IsNullOrEmpty(p) && File.Exists(p))
+                {
+                    try
+                    {
+                        BitmapImage bmp = new BitmapImage();
+                        bmp.BeginInit();
+                        bmp.CacheOption = BitmapCacheOption.OnLoad;
+                        bmp.DecodePixelWidth = 1920;
+                        bmp.UriSource = new Uri(p, UriKind.Absolute);
+                        bmp.EndInit();
+                        bmp.Freeze();
+                        _fallbackImage.Source = bmp;
+                    }
+                    catch { }
+                }
+            }
+            SyncWebViewNavigation();
+        }
+
+        private int _lastDipW = 0;
+        private int _lastDipH = 0;
+
+        public void SyncWpfSize(int physW, int physH, double dpiScale)
+        {
+            if (dpiScale <= 0) dpiScale = 1.0;
+            int w = Math.Max(100, (int)Math.Round(physW / dpiScale));
+            int h = Math.Max(100, (int)Math.Round(physH / dpiScale));
+            if (w == _lastDipW && h == _lastDipH) return;
+            _lastDipW = w;
+            _lastDipH = h;
+            try
+            {
+                Width = w;
+                Height = h;
+                InvalidateMeasure();
+                UpdateLayout();
+            }
+            catch { }
+        }
+
+        public void SetPlaybackActive(bool active)
+        {
+            if (_playbackActive == active) return;
+            _playbackActive = active;
+            SyncWebViewNavigation();
+        }
+    }
+
+    public class RingHudWindow : Window
+    {
+        private readonly Canvas _canvas;
+        private readonly Ellipse _plate;
+        private readonly Ellipse _track;
+        private readonly System.Windows.Shapes.Path _arcPath;
+        private readonly TextBlock _pctText;
+        private readonly ToolTip _tip;
+        private IntPtr _hwnd = IntPtr.Zero;
+        private int _sizeDip = 40;
+        private bool _dragging = false;
+        private Native.POINT _dragStartCursor;
+        private int _dragStartOffsetX;
+        private int _dragStartOffsetY;
+
+        public IntPtr Handle { get { return _hwnd; } }
+        public int OffsetX { get; set; }
+        public int OffsetY { get; set; }
+        public event Action<int, int> OffsetChanged;
+        public event Action ResetRequested;
+
+        public RingHudWindow()
+        {
+            OffsetX = -56;
+            OffsetY = -56;
+
+            WindowStyle = WindowStyle.None;
+            AllowsTransparency = true;
+            Background = Brushes.Transparent;
+            ResizeMode = ResizeMode.NoResize;
+            ShowInTaskbar = false;
+            ShowActivated = false;
+            Cursor = Cursors.Hand;
+            Left = -32000;
+            Top = -32000;
+            Width = 48;
+            Height = 48;
+
+            _canvas = new Canvas();
+            _canvas.Background = Brushes.Transparent;
+
+            _plate = new Ellipse();
+            _plate.Fill = new SolidColorBrush(Color.FromArgb(215, 16, 20, 30));
+            _plate.Stroke = new SolidColorBrush(Color.FromArgb(52, 255, 255, 255));
+            _plate.StrokeThickness = 1.0;
+
+            _track = new Ellipse();
+            _track.Fill = Brushes.Transparent;
+            _track.Stroke = new SolidColorBrush(Color.FromArgb(42, 255, 255, 255));
+            _track.StrokeThickness = 3.2;
+
+            _arcPath = new System.Windows.Shapes.Path();
+            _arcPath.StrokeThickness = 3.4;
+            _arcPath.StrokeStartLineCap = PenLineCap.Round;
+            _arcPath.StrokeEndLineCap = PenLineCap.Round;
+            _arcPath.Stroke = new SolidColorBrush(Color.FromRgb(241, 113, 127));
+
+            _pctText = new TextBlock();
+            _pctText.Foreground = new SolidColorBrush(Color.FromRgb(241, 245, 249));
+            _pctText.FontWeight = FontWeights.SemiBold;
+            _pctText.TextAlignment = TextAlignment.Center;
+            _pctText.Text = "0";
+
+            _canvas.Children.Add(_plate);
+            _canvas.Children.Add(_track);
+            _canvas.Children.Add(_arcPath);
+            _canvas.Children.Add(_pctText);
+
+            _tip = new ToolTip();
+            _tip.Background = new SolidColorBrush(Color.FromRgb(18, 22, 33));
+            _tip.Foreground = new SolidColorBrush(Color.FromRgb(236, 240, 248));
+            _tip.BorderBrush = new SolidColorBrush(Color.FromArgb(80, 255, 255, 255));
+            _tip.Padding = new Thickness(10, 7, 10, 7);
+            _tip.FontSize = 12;
+            ToolTipService.SetInitialShowDelay(_canvas, 120);
+            ToolTipService.SetShowDuration(_canvas, 12000);
+            _canvas.ToolTip = _tip;
+
+            Content = _canvas;
+
+            MouseLeftButtonDown += OnMouseDown;
+            MouseMove += OnMouseMove;
+            MouseLeftButtonUp += OnMouseUp;
+
+            SourceInitialized += delegate
+            {
+                _hwnd = new WindowInteropHelper(this).Handle;
+                int ex = Native.GetWindowLong(_hwnd, Native.GWL_EXSTYLE);
+                Native.SetWindowLong(_hwnd, Native.GWL_EXSTYLE, ex | Native.WS_EX_NOACTIVATE | Native.WS_EX_TOOLWINDOW);
+            };
+        }
+
+        private void OnMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ClickCount == 2)
+            {
+                OffsetX = -56;
+                OffsetY = -56;
+                if (ResetRequested != null) ResetRequested();
+                return;
+            }
+            _dragging = true;
+            Native.GetCursorPos(out _dragStartCursor);
+            _dragStartOffsetX = OffsetX;
+            _dragStartOffsetY = OffsetY;
+            CaptureMouse();
+        }
+
+        private void OnMouseMove(object sender, MouseEventArgs e)
+        {
+            if (!_dragging) return;
+            Native.POINT cur;
+            Native.GetCursorPos(out cur);
+            OffsetX = _dragStartOffsetX + (cur.X - _dragStartCursor.X);
+            OffsetY = _dragStartOffsetY + (cur.Y - _dragStartCursor.Y);
+            if (OffsetChanged != null) OffsetChanged(OffsetX, OffsetY);
+        }
+
+        private void OnMouseUp(object sender, MouseButtonEventArgs e)
+        {
+            if (!_dragging) return;
+            _dragging = false;
+            ReleaseMouseCapture();
+            if (OffsetChanged != null) OffsetChanged(OffsetX, OffsetY);
+        }
+
+        private static Color ParseHexColor(string hex, Color fallback)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(hex))
+                {
+                    object obj = ColorConverter.ConvertFromString(hex);
+                    if (obj is Color) return (Color)obj;
+                }
+            }
+            catch { }
+            return fallback;
+        }
+
+        private static string FormatTokens(long n)
+        {
+            if (n >= 1000000) return string.Format("{0:0.00}M", n / 1000000.0);
+            if (n >= 1000) return string.Format("{0:0.0}K", n / 1000.0);
+            return n.ToString();
+        }
+
+        public void RenderState(CompanionState s)
+        {
+            int size = Math.Max(32, Math.Min(56, s.hudSize > 0 ? s.hudSize : 40));
+            _sizeDip = size;
+            Width = size;
+            Height = size;
+            _canvas.Width = size;
+            _canvas.Height = size;
+
+            double pad = 2.0;
+            double plateSize = size - pad * 2;
+            Canvas.SetLeft(_plate, pad);
+            Canvas.SetTop(_plate, pad);
+            _plate.Width = plateSize;
+            _plate.Height = plateSize;
+
+            double stroke = Math.Max(2.8, size * 0.082);
+            double ringMargin = pad + 4.0;
+            double ringDia = size - ringMargin * 2;
+            Canvas.SetLeft(_track, ringMargin);
+            Canvas.SetTop(_track, ringMargin);
+            _track.Width = ringDia;
+            _track.Height = ringDia;
+            _track.StrokeThickness = stroke;
+
+            double pct = Math.Max(0.0, Math.Min(100.0, s.contextPercent));
+            Color normalCol = ParseHexColor(s.hudAccent, Color.FromRgb(241, 113, 127));
+            Color warnCol = ParseHexColor(s.hudWarnColor, Color.FromRgb(245, 158, 11));
+            Color dangerCol = ParseHexColor(s.hudDangerColor, Color.FromRgb(239, 68, 68));
+            Color activeCol = pct >= 85.0 ? dangerCol : (pct >= 65.0 ? warnCol : normalCol);
+
+            _arcPath.Stroke = new SolidColorBrush(activeCol);
+            _arcPath.StrokeThickness = stroke;
+
+            double cx = size / 2.0;
+            double cy = size / 2.0;
+            double r = ringDia / 2.0;
+
+            if (pct <= 0.1)
+            {
+                _arcPath.Data = null;
+            }
+            else
+            {
+                double clampedPct = pct >= 99.9 ? 99.9 : pct;
+                double angleDeg = clampedPct * 3.6;
+                double angleRad = (angleDeg - 90.0) * Math.PI / 180.0;
+                Point start = new Point(cx, cy - r);
+                Point end = new Point(cx + r * Math.Cos(angleRad), cy + r * Math.Sin(angleRad));
+                bool isLarge = angleDeg > 180.0;
+
+                PathFigure fig = new PathFigure();
+                fig.StartPoint = start;
+                fig.Segments.Add(new ArcSegment(end, new Size(r, r), 0, isLarge, SweepDirection.Clockwise, true));
+                PathGeometry geo = new PathGeometry();
+                geo.Figures.Add(fig);
+                _arcPath.Data = geo;
+            }
+
+            if (s.hudShowPercent)
+            {
+                _pctText.Visibility = Visibility.Visible;
+                _pctText.Text = string.Format("{0:0}", Math.Round(pct));
+                _pctText.FontSize = Math.Max(9.5, size * 0.25);
+                if (!string.IsNullOrEmpty(s.hudFont))
+                {
+                    try { _pctText.FontFamily = new FontFamily(s.hudFont); } catch { }
+                }
+                _pctText.Width = size;
+                Canvas.SetLeft(_pctText, 0);
+                Canvas.SetTop(_pctText, (size - _pctText.FontSize * 1.32) / 2.0);
+            }
+            else
+            {
+                _pctText.Visibility = Visibility.Collapsed;
+            }
+
+            string tipText = string.Format(
+                "上下文占用: {0} / {1} ({2:0.1}%)\n缓存命中: {3:0.1}% · 步数: {4}\n模型: {5}\n会话: {6}\n左键拖动位置 · 双击重置",
+                FormatTokens(s.contextTokens),
+                FormatTokens(s.contextLimit > 0 ? s.contextLimit : 512000),
+                pct,
+                s.cacheHitRate,
+                s.totalSteps,
+                string.IsNullOrEmpty(s.model) ? "Antigravity" : s.model,
+                string.IsNullOrEmpty(s.sessionTitle) ? "当前会话" : s.sessionTitle);
+            _tip.Content = tipText;
+        }
+
+        public int GetSizeDip() { return _sizeDip; }
+    }
+
+    public class Program
+    {
+        private static string _statePath = "";
+        private static string _hudPosPath = "";
+        private static string _activeWinPath = "";
+        private static string _udpPortPath = "";
+        private static int _parentPid = 0;
+        private static UdpClient _udpServer = null;
+
+        private static BackdropWindow _backdrop;
+        private static RingHudWindow _hud;
+        private static IntPtr _trackedAgy = IntPtr.Zero;
+        private static string _lastReportedTitle = null;
+        private static byte _lastAppliedAlpha = 255;
+        private static CompanionState _state = new CompanionState();
+        private static readonly JavaScriptSerializer _json = new JavaScriptSerializer();
+        private static DateTime _lastStateWrite = DateTime.MinValue;
+        private static DateTime _lastDiagWrite = DateTime.MinValue;
+        private static bool _suspendedBySystem = false;
+        private static System.Threading.Mutex _singleInstanceMutex = null;
+
+        private static void WriteDiagSnapshot()
+        {
+            if ((DateTime.UtcNow - _lastDiagWrite).TotalMilliseconds < 1200) return;
+            _lastDiagWrite = DateTime.UtcNow;
+            try
+            {
+                string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "agy_wallpaper_studio");
+                Directory.CreateDirectory(dir);
+                Native.RECT ar = new Native.RECT();
+                Native.RECT br = new Native.RECT();
+                if (_trackedAgy != IntPtr.Zero) Native.GetVisibleBounds(_trackedAgy, out ar);
+                if (_backdrop != null && _backdrop.Handle != IntPtr.Zero) Native.GetWindowRect(_backdrop.Handle, out br);
+                var obj = new Dictionary<string, object>();
+                obj["pid"] = Process.GetCurrentProcess().Id;
+                obj["agyHwnd"] = _trackedAgy.ToInt64();
+                obj["agyRect"] = string.Format("{0},{1} {2}x{3}", ar.Left, ar.Top, ar.Width, ar.Height);
+                obj["agyAlpha"] = _lastAppliedAlpha;
+                obj["backdropHwnd"] = _backdrop != null ? _backdrop.Handle.ToInt64() : 0;
+                obj["backdropVis"] = _backdrop != null && _backdrop.Handle != IntPtr.Zero && Native.IsWindowVisible(_backdrop.Handle);
+                obj["backdropRect"] = string.Format("{0},{1} {2}x{3}", br.Left, br.Top, br.Width, br.Height);
+                obj["wvReady"] = _backdrop != null && _backdrop.WebViewReady;
+                obj["wvError"] = _backdrop != null ? (_backdrop.WebViewError ?? "") : "";
+                obj["activeUrl"] = _backdrop != null ? (_backdrop.ActiveUrl ?? "") : "";
+                obj["backdropEnabled"] = _state.backdropEnabled;
+                obj["translucency"] = _state.windowTranslucency;
+                var agyAll = new List<string>();
+                HashSet<uint> agyPids = new HashSet<uint>();
+                try
+                {
+                    foreach (Process ap in Process.GetProcessesByName("Antigravity"))
+                    {
+                        try { agyPids.Add((uint)ap.Id); } catch { }
+                        try { ap.Dispose(); } catch { }
+                    }
+                }
+                catch { }
+                IntPtr fgH = Native.GetForegroundWindow();
+                uint fgPid = 0;
+                Native.GetWindowThreadProcessId(fgH, out fgPid);
+                StringBuilder fgTitle = new StringBuilder(96);
+                StringBuilder fgCls = new StringBuilder(48);
+                Native.GetWindowText(fgH, fgTitle, 96);
+                Native.GetClassName(fgH, fgCls, 48);
+                string fgProc = "?";
+                try { using (Process fp = Process.GetProcessById((int)fgPid)) { fgProc = fp.ProcessName; } } catch { }
+                Native.RECT fgRect;
+                Native.GetWindowRect(fgH, out fgRect);
+                obj["fg"] = string.Format("{0}[{1}] hwnd={2} cls={3} vis={4} {5},{6} {7}x{8} '{9}'",
+                    fgProc, fgPid, fgH.ToInt64(), fgCls, Native.IsWindowVisible(fgH), fgRect.Left, fgRect.Top, fgRect.Width, fgRect.Height, fgTitle);
+
+                Native.EnumWindows(delegate(IntPtr h, IntPtr l)
+                {
+                    uint wp;
+                    Native.GetWindowThreadProcessId(h, out wp);
+                    if (!agyPids.Contains(wp)) return true;
+                    Native.RECT wr;
+                    Native.GetWindowRect(h, out wr);
+                    StringBuilder tb = new StringBuilder(96);
+                    StringBuilder cb = new StringBuilder(48);
+                    Native.GetWindowText(h, tb, 96);
+                    Native.GetClassName(h, cb, 48);
+                    agyAll.Add(string.Format("pid={0} hwnd={1} vis={2} iconic={3} cls={4} {5},{6} {7}x{8} '{9}'",
+                        wp, h.ToInt64(), Native.IsWindowVisible(h), Native.IsIconic(h), cb, wr.Left, wr.Top, wr.Width, wr.Height, tb));
+                    return agyAll.Count < 20;
+                }, IntPtr.Zero);
+                obj["agyPidCount"] = agyPids.Count;
+                obj["agyAllWindows"] = agyAll;
+                File.WriteAllText(System.IO.Path.Combine(dir, "companion_diag.json"), _json.Serialize(obj), Encoding.UTF8);
+            }
+            catch { }
+        }
+
+        [STAThread]
+        public static void Main(string[] args)
+        {
+            Native.EnableDpiAwareness();
+
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (args[i] == "--restore")
+                {
+                    Native.RestoreAllAntigravityWindows();
+                    return;
+                }
+                if (args[i] == "--state" && i + 1 < args.Length) _statePath = args[++i];
+                else if (args[i] == "--hud-pos" && i + 1 < args.Length) _hudPosPath = args[++i];
+                else if (args[i] == "--active-win" && i + 1 < args.Length) _activeWinPath = args[++i];
+                else if (args[i] == "--udp-port-file" && i + 1 < args.Length) _udpPortPath = args[++i];
+                else if (args[i] == "--parent-pid" && i + 1 < args.Length) int.TryParse(args[++i], out _parentPid);
+            }
+
+            bool createdNew = false;
+            try
+            {
+                _singleInstanceMutex = new System.Threading.Mutex(true, "Local\\AgyWallpaperStudioCompanionMutex", out createdNew);
+                if (!createdNew) return;
+            }
+            catch { }
+
+            Application app = new Application();
+            app.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            app.DispatcherUnhandledException += delegate(object s, DispatcherUnhandledExceptionEventArgs e)
+            {
+                RestoreAndHide();
+                e.Handled = true;
+            };
+            AppDomain.CurrentDomain.UnhandledException += delegate
+            {
+                RestoreAndHide();
+            };
+
+            SystemEvents.PowerModeChanged += delegate(object s, PowerModeChangedEventArgs e)
+            {
+                if (e.Mode == PowerModes.Suspend)
+                {
+                    _suspendedBySystem = true;
+                    RestoreAndHide();
+                }
+                else if (e.Mode == PowerModes.Resume)
+                {
+                    _suspendedBySystem = false;
+                }
+            };
+            SystemEvents.SessionSwitch += delegate(object s, SessionSwitchEventArgs e)
+            {
+                if (e.Reason == SessionSwitchReason.SessionLock)
+                {
+                    _suspendedBySystem = true;
+                    RestoreAndHide();
+                }
+                else if (e.Reason == SessionSwitchReason.SessionUnlock)
+                {
+                    _suspendedBySystem = false;
+                }
+            };
+
+            _backdrop = new BackdropWindow();
+            _hud = new RingHudWindow();
+            LoadHudOffset();
+
+            _hud.OffsetChanged += delegate(int ox, int oy)
+            {
+                SaveHudOffset(ox, oy);
+                SyncGeometry();
+            };
+            _hud.ResetRequested += delegate
+            {
+                SaveHudOffset(_hud.OffsetX, _hud.OffsetY);
+                SyncGeometry();
+            };
+
+            _backdrop.Show();
+            _hud.Show();
+            Native.SetWindowPos(_backdrop.Handle, IntPtr.Zero, -32000, -32000, 10, 10, Native.SWP_NOACTIVATE | Native.SWP_HIDEWINDOW);
+            Native.SetWindowPos(_hud.Handle, IntPtr.Zero, -32000, -32000, 10, 10, Native.SWP_NOACTIVATE | Native.SWP_HIDEWINDOW);
+
+            DispatcherTimer stateTimer = new DispatcherTimer();
+            stateTimer.Interval = TimeSpan.FromMilliseconds(90);
+            stateTimer.Tick += delegate
+            {
+                if (IsParentDead())
+                {
+                    RestoreAndHide();
+                    app.Shutdown();
+                    return;
+                }
+                PollStateFile();
+                WriteDiagSnapshot();
+                if (_state.shutdown)
+                {
+                    RestoreAndHide();
+                    app.Shutdown();
+                    return;
+                }
+            };
+            stateTimer.Start();
+
+            DispatcherTimer geomTimer = new DispatcherTimer();
+            geomTimer.Interval = TimeSpan.FromMilliseconds(33);
+            geomTimer.Tick += delegate
+            {
+                SyncGeometry();
+            };
+            geomTimer.Start();
+
+            app.Exit += delegate
+            {
+                try { if (_udpServer != null) _udpServer.Close(); } catch { }
+                RestoreAndHide();
+            };
+
+            app.Startup += delegate
+            {
+                _backdrop.StartWebViewInit();
+                StartUdpLiveListener(app.Dispatcher);
+            };
+
+            PollStateFile();
+            SyncGeometry();
+            app.Run();
+        }
+
+        private static void StartUdpLiveListener(Dispatcher dispatcher)
+        {
+            if (string.IsNullOrEmpty(_udpPortPath)) return;
+            try
+            {
+                _udpServer = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+                int boundPort = ((IPEndPoint)_udpServer.Client.LocalEndPoint).Port;
+                File.WriteAllText(_udpPortPath, boundPort.ToString(), Encoding.UTF8);
+
+                Thread t = new Thread(delegate()
+                {
+                    IPEndPoint remote = new IPEndPoint(IPAddress.Any, 0);
+                    while (true)
+                    {
+                        try
+                        {
+                            byte[] data = _udpServer.Receive(ref remote);
+                            if (data == null || data.Length == 0) continue;
+                            string jsonText = Encoding.UTF8.GetString(data);
+                            Dictionary<string, object> patch = _json.Deserialize<Dictionary<string, object>>(jsonText);
+                            if (patch == null) continue;
+                            dispatcher.BeginInvoke(DispatcherPriority.Send, new Action(delegate
+                            {
+                                ApplyLivePatch(patch);
+                            }));
+                        }
+                        catch
+                        {
+                            break;
+                        }
+                    }
+                });
+                t.IsBackground = true;
+                t.Start();
+            }
+            catch { }
+        }
+
+        private static void ApplyLivePatch(Dictionary<string, object> patch)
+        {
+            bool hudDirty = false;
+            bool alphaDirty = false;
+
+            if (patch.ContainsKey("windowTranslucency"))
+            {
+                int v;
+                if (int.TryParse(Convert.ToString(patch["windowTranslucency"]), out v))
+                {
+                    _state.windowTranslucency = Math.Max(0, Math.Min(55, v));
+                    alphaDirty = true;
+                }
+            }
+            if (patch.ContainsKey("backdropBlur"))
+            {
+                int v;
+                if (int.TryParse(Convert.ToString(patch["backdropBlur"]), out v)) _state.backdropBlur = v;
+            }
+            if (patch.ContainsKey("backdropDim"))
+            {
+                int v;
+                if (int.TryParse(Convert.ToString(patch["backdropDim"]), out v)) _state.backdropDim = v;
+            }
+            if (patch.ContainsKey("hudSize"))
+            {
+                int v;
+                if (int.TryParse(Convert.ToString(patch["hudSize"]), out v))
+                {
+                    _state.hudSize = Math.Max(32, Math.Min(56, v));
+                    hudDirty = true;
+                }
+            }
+            if (patch.ContainsKey("hudAccent"))
+            {
+                _state.hudAccent = Convert.ToString(patch["hudAccent"]);
+                hudDirty = true;
+            }
+            if (patch.ContainsKey("hudWarnColor"))
+            {
+                _state.hudWarnColor = Convert.ToString(patch["hudWarnColor"]);
+                hudDirty = true;
+            }
+            if (patch.ContainsKey("hudDangerColor"))
+            {
+                _state.hudDangerColor = Convert.ToString(patch["hudDangerColor"]);
+                hudDirty = true;
+            }
+            if (patch.ContainsKey("hudFont"))
+            {
+                _state.hudFont = Convert.ToString(patch["hudFont"]);
+                hudDirty = true;
+            }
+            if (patch.ContainsKey("hudShowPercent"))
+            {
+                bool b;
+                if (bool.TryParse(Convert.ToString(patch["hudShowPercent"]), out b))
+                {
+                    _state.hudShowPercent = b;
+                    hudDirty = true;
+                }
+            }
+
+            if (alphaDirty && _state.backdropEnabled && _trackedAgy != IntPtr.Zero && Native.IsWindowVisible(_trackedAgy) && !Native.IsIconic(_trackedAgy))
+            {
+                byte alpha = (byte)Math.Round(255.0 * (100 - _state.windowTranslucency) / 100.0);
+                if (alpha != _lastAppliedAlpha)
+                {
+                    Native.SetWindowAlpha(_trackedAgy, alpha);
+                    _lastAppliedAlpha = alpha;
+                }
+            }
+
+            if (hudDirty && _hud != null)
+            {
+                _hud.RenderState(_state);
+                SyncGeometry();
+            }
+        }
+
+        private static bool IsParentDead()
+        {
+            if (_parentPid <= 0) return false;
+            try
+            {
+                using (Process p = Process.GetProcessById(_parentPid))
+                {
+                    return p.HasExited;
+                }
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
+        private static void LoadHudOffset()
+        {
+            if (string.IsNullOrEmpty(_hudPosPath) || !File.Exists(_hudPosPath)) return;
+            try
+            {
+                string raw = File.ReadAllText(_hudPosPath, Encoding.UTF8);
+                HudOffset o = _json.Deserialize<HudOffset>(raw);
+                if (o != null)
+                {
+                    _hud.OffsetX = o.offsetX;
+                    _hud.OffsetY = o.offsetY;
+                }
+            }
+            catch { }
+        }
+
+        private static void SaveHudOffset(int ox, int oy)
+        {
+            if (string.IsNullOrEmpty(_hudPosPath)) return;
+            try
+            {
+                HudOffset o = new HudOffset { offsetX = ox, offsetY = oy };
+                File.WriteAllText(_hudPosPath, _json.Serialize(o), Encoding.UTF8);
+            }
+            catch { }
+        }
+
+        private static void PollStateFile()
+        {
+            if (string.IsNullOrEmpty(_statePath) || !File.Exists(_statePath)) return;
+            try
+            {
+                DateTime wt = File.GetLastWriteTimeUtc(_statePath);
+                if (wt == _lastStateWrite) return;
+                _lastStateWrite = wt;
+                string raw = File.ReadAllText(_statePath, Encoding.UTF8);
+                CompanionState parsed = _json.Deserialize<CompanionState>(raw);
+                if (parsed != null)
+                {
+                    _state = parsed;
+                    _backdrop.ApplyState(_state);
+                    _hud.RenderState(_state);
+                }
+            }
+            catch { }
+        }
+
+        private static void RestoreAndHide()
+        {
+            try
+            {
+                if (_trackedAgy != IntPtr.Zero)
+                {
+                    Native.SetWindowAlpha(_trackedAgy, 255);
+                    _lastAppliedAlpha = 255;
+                }
+                Native.RestoreAllAntigravityWindows();
+            }
+            catch { }
+            try
+            {
+                if (_backdrop != null && _backdrop.Handle != IntPtr.Zero)
+                {
+                    _backdrop.SetPlaybackActive(false);
+                    Native.SetWindowPos(_backdrop.Handle, IntPtr.Zero, 0, 0, 0, 0,
+                        Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_HIDEWINDOW);
+                }
+                if (_hud != null && _hud.Handle != IntPtr.Zero)
+                {
+                    Native.SetWindowPos(_hud.Handle, IntPtr.Zero, 0, 0, 0, 0,
+                        Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_HIDEWINDOW);
+                }
+            }
+            catch { }
+        }
+
+        private static void SyncGeometry()
+        {
+            if (_suspendedBySystem || _state.shutdown)
+            {
+                RestoreAndHide();
+                return;
+            }
+
+            IntPtr agy = Native.PickPrimaryAntigravityWindow();
+            if (agy != _trackedAgy && _trackedAgy != IntPtr.Zero)
+            {
+                Native.SetWindowAlpha(_trackedAgy, 255);
+                _lastAppliedAlpha = 255;
+            }
+            _trackedAgy = agy;
+
+            if (agy == IntPtr.Zero || !Native.IsWindow(agy) || !Native.IsWindowVisible(agy) || Native.IsIconic(agy))
+            {
+                RestoreAndHide();
+                return;
+            }
+
+            // Detect Antigravity window title changes immediately (33ms cadence) for instant conversation switching
+            if (!string.IsNullOrEmpty(_activeWinPath))
+            {
+                try
+                {
+                    StringBuilder titleBuf = new StringBuilder(256);
+                    Native.GetWindowText(agy, titleBuf, 256);
+                    string curTitle = titleBuf.ToString();
+                    if (curTitle != _lastReportedTitle)
+                    {
+                        _lastReportedTitle = curTitle;
+                        var wObj = new Dictionary<string, object>();
+                        wObj["windowTitle"] = curTitle;
+                        wObj["hwnd"] = agy.ToInt64();
+                        wObj["ts"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                        File.WriteAllText(_activeWinPath, _json.Serialize(wObj), Encoding.UTF8);
+                    }
+                }
+                catch { }
+            }
+
+            Native.RECT rect;
+            if (!Native.GetVisibleBounds(agy, out rect) || rect.Width < 200 || rect.Height < 140)
+            {
+                RestoreAndHide();
+                return;
+            }
+
+            bool wantBackdrop = _state.backdropEnabled && !string.IsNullOrEmpty(_state.stageUrl);
+            if (wantBackdrop && _backdrop.Handle != IntPtr.Zero)
+            {
+                int translucency = Math.Max(0, Math.Min(55, _state.windowTranslucency));
+                byte alpha = (byte)Math.Round(255.0 * (100 - translucency) / 100.0);
+                if (alpha != _lastAppliedAlpha)
+                {
+                    Native.SetWindowAlpha(agy, alpha);
+                    _lastAppliedAlpha = alpha;
+                }
+
+                double bgScale = Native.GetDpiScale(agy);
+                _backdrop.SyncWpfSize(rect.Width, rect.Height, bgScale);
+                _backdrop.SetPlaybackActive(true);
+                Native.SetWindowPos(
+                    _backdrop.Handle,
+                    agy,
+                    rect.Left,
+                    rect.Top,
+                    rect.Width,
+                    rect.Height,
+                    Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
+            }
+            else
+            {
+                if (_lastAppliedAlpha != 255)
+                {
+                    Native.SetWindowAlpha(agy, 255);
+                    _lastAppliedAlpha = 255;
+                }
+                if (_backdrop.Handle != IntPtr.Zero)
+                {
+                    _backdrop.SetPlaybackActive(false);
+                    Native.SetWindowPos(_backdrop.Handle, IntPtr.Zero, 0, 0, 0, 0,
+                        Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_HIDEWINDOW);
+                }
+            }
+
+            if (_state.hudEnabled && _hud.Handle != IntPtr.Zero)
+            {
+                double scale = Native.GetDpiScale(agy);
+                int pxSize = (int)Math.Round(_hud.GetSizeDip() * scale);
+                int hx = rect.Right + _hud.OffsetX;
+                int hy = rect.Bottom + _hud.OffsetY;
+
+                hx = Math.Max(rect.Left + 8, Math.Min(rect.Right - pxSize - 8, hx));
+                hy = Math.Max(rect.Top + 36, Math.Min(rect.Bottom - pxSize - 8, hy));
+
+                IntPtr insertAfter = Native.GetWindow(agy, Native.GW_HWNDPREV);
+                if (insertAfter == _hud.Handle)
+                {
+                    Native.SetWindowPos(_hud.Handle, IntPtr.Zero, hx, hy, pxSize, pxSize,
+                        Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
+                }
+                else
+                {
+                    Native.SetWindowPos(_hud.Handle, insertAfter == IntPtr.Zero ? Native.HWND_TOP : insertAfter,
+                        hx, hy, pxSize, pxSize, Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
+                }
+            }
+            else if (_hud.Handle != IntPtr.Zero)
+            {
+                Native.SetWindowPos(_hud.Handle, IntPtr.Zero, 0, 0, 0, 0,
+                    Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_HIDEWINDOW);
+            }
+        }
+    }
+}

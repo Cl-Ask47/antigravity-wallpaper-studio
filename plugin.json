@@ -1,0 +1,30 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "wallpaper-studio",
+  "displayName": "Wallpaper Studio · 壁纸与上下文圆环",
+  "version": "0.6.0",
+  "description": "Zero-intrusion Steam Wallpaper Engine backdrop (Video / 3D Scene / Web) & minimalist real-time context usage ring HUD for Google Antigravity.",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "打开壁纸与上下文圆环控制面板",
+    "查看当前会话的精确上下文用量和缓存命中率",
+    "切换 Wallpaper Engine 贴背壁纸与圆环颜色"
+  ],
+  "author": {
+    "name": "chongjunxi-star",
+    "url": "https://github.com/chongjunxi-star"
+  },
+  "homepage": "https://github.com/chongjunxi-star/antigravity-wallpaper-studio",
+  "repository": "https://github.com/chongjunxi-star/antigravity-wallpaper-studio",
+  "license": "MIT",
+  "keywords": [
+    "antigravity",
+    "wallpaper-engine",
+    "backdrop",
+    "context-ring",
+    "hud",
+    "sidecar",
+    "webwallgl",
+    "ui"
+  ]
+}
