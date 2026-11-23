@@ -8,7 +8,7 @@
 
 支持 Steam Wallpaper Engine 全类型壁纸（视频 / 3D 场景 / 网页 / 图片）· 双缓冲淡入淡出 · 50Hz 实时连续调参 · 随机轮播 · 毫秒级切换对话追踪
 
-[![Release](https://img.shields.io/github/v/release/chongjunxi-star/antigravity-wallpaper-studio?style=flat-square&color=f1717f)](https://github.com/chongjunxi-star/antigravity-wallpaper-studio/releases)
+[![Release](https://img.shields.io/github/v/release/Cl-Ask47/antigravity-wallpaper-studio?style=flat-square&color=f1717f)](https://github.com/Cl-Ask47/antigravity-wallpaper-studio/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-38bdf8?style=flat-square)](./LICENSE)
 [![Platform: Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-818cf8?style=flat-square)](#环境要求)
 
@@ -45,12 +45,12 @@
 ### 方式一：PowerShell 一行命令安装（推荐）
 
 ```powershell
-irm https://raw.githubusercontent.com/chongjunxi-star/antigravity-wallpaper-studio/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/Cl-Ask47/antigravity-wallpaper-studio/main/scripts/install.ps1 | iex
 ```
 
 ### 方式二：下载 Release 压缩包，双击即装
 
-1. 前往 [Releases 页面](https://github.com/chongjunxi-star/antigravity-wallpaper-studio/releases/latest) 下载 `wallpaper-studio-v*.zip` 并解压。
+1. 前往 [Releases 页面](https://github.com/Cl-Ask47/antigravity-wallpaper-studio/releases/latest) 下载 `wallpaper-studio-v*.zip` 并解压。
 2. 双击运行 **`install.cmd`**，脚本会将插件复制到 `~/.gemini/config/plugins/wallpaper-studio/`。
 3. 打开 Antigravity（无需重启，插件自动热加载），在右侧面板 **Plugins → 壁纸与圆环** 打开控制面板，或在对话中输入 `/wallpaper-studio`。
 
@@ -58,10 +58,10 @@ irm https://raw.githubusercontent.com/chongjunxi-star/antigravity-wallpaper-stud
 
 ```bash
 # 通过 agy CLI 直接安装
-agy plugin install https://github.com/chongjunxi-star/antigravity-wallpaper-studio
+agy plugin install https://github.com/Cl-Ask47/antigravity-wallpaper-studio
 
 # 或手动克隆到插件目录
-git clone https://github.com/chongjunxi-star/antigravity-wallpaper-studio.git "%USERPROFILE%\.gemini\config\plugins\wallpaper-studio"
+git clone https://github.com/Cl-Ask47/antigravity-wallpaper-studio.git "%USERPROFILE%\.gemini\config\plugins\wallpaper-studio"
 ```
 
 ---

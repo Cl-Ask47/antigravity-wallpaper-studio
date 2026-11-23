@@ -1,5 +1,5 @@
 param(
-  [string]$Repo = "chongjunxi-star/antigravity-wallpaper-studio",
+  [string]$Repo = "Cl-Ask47/antigravity-wallpaper-studio",
   [string]$Branch = "main"
 )
 
