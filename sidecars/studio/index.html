@@ -600,6 +600,18 @@
               </div>
               <input type="range" id="rngVolume" min="0" max="100" step="1" />
             </div>
+            <div class="ctrl-inline" title="打开右侧「文档预览」面板时自动遮挡该区域背后的壁纸，保证阅读清晰">
+              <span>文档预览屏蔽壁纸</span>
+              <input type="checkbox" id="chkDocMask" />
+            </div>
+            <div class="ctrl-inline">
+              <span>文档遮罩底色</span>
+              <select class="select" id="selDocMaskMode" style="width:110px">
+                <option value="auto">跟随宿主</option>
+                <option value="light">浅色护眼</option>
+                <option value="dark">深色纯底</option>
+              </select>
+            </div>
           </div>
         </details>
 
@@ -954,7 +966,9 @@
         rotStatus.innerHTML = `轮播已暂停 · 当前池 <strong>${rotation ? rotation.poolCount : 0}</strong> 张`;
       }
 
-      // HUD & Panel selects
+      // HUD & Panel & DocMask selects
+      document.getElementById('chkDocMask').checked = !!config.docMaskEnabled;
+      document.getElementById('selDocMaskMode').value = config.docMaskMode || 'auto';
       document.getElementById('chkHudShowPct').checked = !!config.hudShowPercent;
       document.getElementById('selHudFont').value = config.hudFont;
       document.getElementById('selPanelFont').value = config.panelFont;
@@ -1147,6 +1161,8 @@
     document.getElementById('selSceneFps').addEventListener('change', (e) => patchConfig({ sceneFps: Number(e.target.value) }, true));
     document.getElementById('chkVideoMuted').addEventListener('change', (e) => patchConfig({ videoMuted: e.target.checked }, true));
     bindLiveRange('rngVolume', (e) => ({ videoVolume: Number(e.target.value), videoMuted: false }));
+    document.getElementById('chkDocMask').addEventListener('change', (e) => patchConfig({ docMaskEnabled: e.target.checked }, true));
+    document.getElementById('selDocMaskMode').addEventListener('change', (e) => patchConfig({ docMaskMode: e.target.value }, true));
 
     // Rotation controls
     document.getElementById('chkRotEnabled').addEventListener('change', (e) => patchConfig({ rotationEnabled: e.target.checked }, true));
@@ -1194,6 +1210,31 @@
       renderLibrary();
     }
 
+    function normalizeCssHex(raw) {
+      if (!raw || typeof raw !== 'string') return '';
+      const s = raw.trim();
+      if (/^#[0-9a-fA-F]{6}$/.test(s)) return s;
+      const m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(s);
+      if (!m) return '';
+      return '#' + [m[1], m[2], m[3]].map((x) => Math.max(0, Math.min(255, Number(x))).toString(16).padStart(2, '0')).join('');
+    }
+
+    function syncHostBgTheme() {
+      try {
+        const bg = getComputedStyle(document.documentElement).getPropertyValue('--background');
+        const hex = normalizeCssHex(bg);
+        if (hex && state?.config?.hostBgColor !== hex) {
+          patchConfig({ hostBgColor: hex }, true);
+        }
+      } catch {}
+    }
+
+    window.addEventListener('message', (ev) => {
+      if (ev?.data?.type === 'theme-change') {
+        setTimeout(syncHostBgTheme, 50);
+      }
+    });
+
     syncSidebarUi();
     (async () => {
       try {
@@ -1201,6 +1242,7 @@
         if (cid) await api.post('/api/active-conv', { conversationId: cid });
       } catch {}
       await loadState();
+      syncHostBgTheme();
       await loadLibrary(false);
       setInterval(() => {
         loadState().catch(() => {});

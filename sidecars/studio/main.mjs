@@ -54,6 +54,10 @@ const DEFAULT_CONFIG = {
   panelFont: 'system',
   panelInputBg: '#161b26',
   panelSurfaceOpacity: 82,
+  // Doc-preview integration
+  docMaskEnabled: true,
+  docMaskMode: 'auto', // 'auto' | 'dark' | 'light'
+  hostBgColor: '#0f1419',
 };
 
 function clamp(n, min, max, fallback) {
@@ -133,6 +137,17 @@ function sanitizeConfig(raw) {
       100,
       DEFAULT_CONFIG.panelSurfaceOpacity,
     ),
+    docMaskEnabled:
+      typeof src.docMaskEnabled === 'boolean'
+        ? src.docMaskEnabled
+        : DEFAULT_CONFIG.docMaskEnabled,
+    docMaskMode: ['auto', 'dark', 'light'].includes(src.docMaskMode)
+      ? src.docMaskMode
+      : DEFAULT_CONFIG.docMaskMode,
+    hostBgColor:
+      typeof src.hostBgColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(src.hostBgColor.trim())
+        ? src.hostBgColor.trim()
+        : DEFAULT_CONFIG.hostBgColor,
   };
 }
 
@@ -266,6 +281,12 @@ const mediaServer = createMediaServer({
   getStageState,
 });
 
+function resolveDocMaskColor() {
+  if (config.docMaskMode === 'light') return '#f8fafc';
+  if (config.docMaskMode === 'dark') return '#0f1419';
+  return config.hostBgColor || '#0f1419';
+}
+
 function buildCompanionPayload(telemetry) {
   const wp = findActiveWallpaper();
   const port = mediaServer.getPort();
@@ -273,6 +294,8 @@ function buildCompanionPayload(telemetry) {
     shutdown: false,
     backdropEnabled: config.backdropEnabled && Boolean(wp) && port > 0,
     hudEnabled: config.hudEnabled,
+    docMaskEnabled: config.docMaskEnabled,
+    docMaskColor: resolveDocMaskColor(),
     stageUrl: port > 0 ? `http://127.0.0.1:${port}/stage?localAssets=1` : '',
     previewPath: wp?.previewPath || '',
     mediaPath: wp?.effectiveBackdropPath || '',
@@ -440,6 +463,8 @@ app.api('/api/live', (data) => {
     hudDangerColor: config.hudDangerColor,
     hudShowPercent: config.hudShowPercent,
     hudFont: config.hudFont,
+    docMaskEnabled: config.docMaskEnabled,
+    docMaskColor: resolveDocMaskColor(),
   });
   return { ok: true };
 });

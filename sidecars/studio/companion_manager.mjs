@@ -134,6 +134,8 @@ export async function ensureCompanionCompiled() {
     '/r:System.Web.Extensions.dll',
     '/r:System.Drawing.dll',
     '/r:System.Windows.Forms.dll',
+    '/r:UIAutomationClient.dll',
+    '/r:UIAutomationTypes.dll',
   ];
 
   if (hasWv2) {

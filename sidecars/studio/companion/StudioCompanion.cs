@@ -18,6 +18,7 @@ using System.Windows.Media.Effects;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using System.Windows.Automation;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
 using Microsoft.Win32;
@@ -29,6 +30,8 @@ namespace WallpaperStudioCompanion
         public bool shutdown { get; set; }
         public bool backdropEnabled { get; set; }
         public bool hudEnabled { get; set; }
+        public bool docMaskEnabled { get; set; }
+        public string docMaskColor { get; set; }
         public string stageUrl { get; set; }
         public string previewPath { get; set; }
         public string mediaPath { get; set; }
@@ -190,6 +193,12 @@ namespace WallpaperStudioCompanion
         [DllImport("user32.dll")]
         public static extern uint GetDpiForWindow(IntPtr hwnd);
 
+        [DllImport("winmm.dll")]
+        public static extern uint timeBeginPeriod(uint uPeriod);
+
+        [DllImport("winmm.dll")]
+        public static extern uint timeEndPeriod(uint uPeriod);
+
         public static void EnableDpiAwareness()
         {
             try
@@ -336,6 +345,7 @@ namespace WallpaperStudioCompanion
         private string _activeUrl = "";
         private bool _playbackActive = false;
         private string _fallbackPath = "";
+        private string _lastDocMaskJson = "";
         private IntPtr _hwnd = IntPtr.Zero;
 
         public IntPtr Handle { get { return _hwnd; } }
@@ -524,6 +534,24 @@ namespace WallpaperStudioCompanion
             if (_playbackActive == active) return;
             _playbackActive = active;
             SyncWebViewNavigation();
+        }
+
+        public void PushDocMask(bool show, double x, double y, double w, double h, string bgColor)
+        {
+            if (!_wvReady || _webView.CoreWebView2 == null) return;
+            string col = string.IsNullOrEmpty(bgColor) ? "#0f172a" : bgColor;
+            string json = show
+                ? string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                    "{{\"type\":\"docMask\",\"show\":true,\"x\":{0:0.0},\"y\":{1:0.0},\"w\":{2:0.0},\"h\":{3:0.0},\"bg\":\"{4}\"}}",
+                    x, y, w, h, col.Replace("\"", ""))
+                : "{\"type\":\"docMask\",\"show\":false}";
+            if (json == _lastDocMaskJson) return;
+            _lastDocMaskJson = json;
+            try
+            {
+                _webView.CoreWebView2.PostWebMessageAsJson(json);
+            }
+            catch { }
         }
     }
 
@@ -779,6 +807,13 @@ namespace WallpaperStudioCompanion
         private static RingHudWindow _hud;
         private static IntPtr _trackedAgy = IntPtr.Zero;
         private static DateTime _lastWindowDiscovery = DateTime.MinValue;
+        private static DateTime _lastInsetCalib = DateTime.MinValue;
+        private static DateTime _lastTitlePoll = DateTime.MinValue;
+        private static int _insetL = 0, _insetT = 0, _insetR = 0, _insetB = 0;
+        private static double _cachedDpiScale = 1.0;
+        private static int _lastRawW = 0, _lastRawH = 0;
+        private static volatile bool _isMovingOrSizing = false;
+        private static bool _timerPeriodActive = false;
         private static Native.RECT _lastBackdropRect = new Native.RECT();
         private static bool _lastBackdropShown = false;
         private static Native.RECT _lastHudRect = new Native.RECT();
@@ -794,6 +829,14 @@ namespace WallpaperStudioCompanion
         private static IntPtr _hookLoc = IntPtr.Zero;
         private static IntPtr _hookFg = IntPtr.Zero;
         private static Native.WinEventDelegate _winEventProc = null;
+        private static DispatcherTimer _dragTimer = null;
+
+        // Doc-preview UIA tracking state (written by background UIA thread, read by UI thread)
+        private static readonly object _docLock = new object();
+        private static bool _docVisible = false;
+        private static Native.RECT _docScreenRect = new Native.RECT();
+        private static string _docMatchKind = "";
+        private static volatile bool _uiaRunning = true;
 
         private static void WriteDiagSnapshot()
         {
@@ -820,6 +863,12 @@ namespace WallpaperStudioCompanion
                 obj["activeUrl"] = _backdrop != null ? (_backdrop.ActiveUrl ?? "") : "";
                 obj["backdropEnabled"] = _state.backdropEnabled;
                 obj["translucency"] = _state.windowTranslucency;
+                lock (_docLock)
+                {
+                    obj["docVisible"] = _docVisible;
+                    obj["docKind"] = _docMatchKind;
+                    obj["docRect"] = string.Format("{0},{1} {2}x{3}", _docScreenRect.Left, _docScreenRect.Top, _docScreenRect.Width, _docScreenRect.Height);
+                }
                 var agyAll = new List<string>();
                 HashSet<uint> agyPids = new HashSet<uint>();
                 try
@@ -871,6 +920,7 @@ namespace WallpaperStudioCompanion
         public static void Main(string[] args)
         {
             Native.EnableDpiAwareness();
+            try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.AboveNormal; } catch { }
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -973,22 +1023,36 @@ namespace WallpaperStudioCompanion
             stateTimer.Start();
 
             DispatcherTimer geomTimer = new DispatcherTimer(DispatcherPriority.Send);
-            geomTimer.Interval = TimeSpan.FromMilliseconds(16);
+            geomTimer.Interval = TimeSpan.FromMilliseconds(33);
             geomTimer.Tick += delegate
             {
                 SyncGeometry(false);
             };
             geomTimer.Start();
 
+            _dragTimer = new DispatcherTimer(DispatcherPriority.Send);
+            _dragTimer.Interval = TimeSpan.FromMilliseconds(4);
+            _dragTimer.Tick += delegate
+            {
+                if (_isMovingOrSizing) SyncGeometry(false);
+                else StopDragBoost();
+            };
+
             CompositionTarget.Rendering += delegate
             {
-                SyncGeometry(false);
+                if (_isMovingOrSizing || _state.backdropEnabled || _state.hudEnabled)
+                {
+                    SyncGeometry(false);
+                }
             };
 
             InstallWinEventHooks();
+            StartUiaDocWatcher();
 
             app.Exit += delegate
             {
+                _uiaRunning = false;
+                StopDragBoost();
                 try { if (_hookLoc != IntPtr.Zero) Native.UnhookWinEvent(_hookLoc); } catch { }
                 try { if (_hookFg != IntPtr.Zero) Native.UnhookWinEvent(_hookFg); } catch { }
                 try { if (_udpServer != null) _udpServer.Close(); } catch { }
@@ -1018,18 +1082,176 @@ namespace WallpaperStudioCompanion
             catch { }
         }
 
+        private static void StartDragBoost()
+        {
+            _isMovingOrSizing = true;
+            if (!_timerPeriodActive)
+            {
+                try { Native.timeBeginPeriod(1); _timerPeriodActive = true; } catch { }
+            }
+            try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High; } catch { }
+            if (_dragTimer != null && !_dragTimer.IsEnabled) _dragTimer.Start();
+        }
+
+        private static void StopDragBoost()
+        {
+            _isMovingOrSizing = false;
+            if (_dragTimer != null && _dragTimer.IsEnabled) _dragTimer.Stop();
+            if (_timerPeriodActive)
+            {
+                try { Native.timeEndPeriod(1); _timerPeriodActive = false; } catch { }
+            }
+            try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.AboveNormal; } catch { }
+        }
+
         private static void OnWinEvent(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
         {
             if (idObject != 0 || idChild != 0) return;
             if (eventType == Native.EVENT_SYSTEM_FOREGROUND)
             {
+                StopDragBoost();
                 _lastWindowDiscovery = DateTime.MinValue;
+                _lastInsetCalib = DateTime.MinValue;
                 SyncGeometry(true);
                 return;
             }
-            if (hwnd == _trackedAgy && _trackedAgy != IntPtr.Zero)
+            if (hwnd != _trackedAgy || _trackedAgy == IntPtr.Zero) return;
+            if (eventType == Native.EVENT_SYSTEM_MOVESIZESTART)
             {
+                StartDragBoost();
                 SyncGeometry(false);
+                return;
+            }
+            if (eventType == Native.EVENT_SYSTEM_MOVESIZEEND)
+            {
+                StopDragBoost();
+                _lastInsetCalib = DateTime.MinValue;
+                SyncGeometry(false);
+                return;
+            }
+            SyncGeometry(false);
+        }
+
+        private static void StartUiaDocWatcher()
+        {
+            Thread t = new Thread(delegate()
+            {
+                while (_uiaRunning)
+                {
+                    try
+                    {
+                        IntPtr target = _trackedAgy;
+                        if (!_isMovingOrSizing && _state.backdropEnabled && _state.docMaskEnabled && target != IntPtr.Zero && Native.IsWindowVisible(target) && !Native.IsIconic(target))
+                        {
+                            DetectDocPreviewPane(target);
+                        }
+                        else if (!_state.docMaskEnabled || target == IntPtr.Zero || Native.IsIconic(target))
+                        {
+                            lock (_docLock)
+                            {
+                                _docVisible = false;
+                                _docMatchKind = "";
+                            }
+                        }
+                    }
+                    catch { }
+                    Thread.Sleep(_isMovingOrSizing ? 120 : 220);
+                }
+            });
+            t.IsBackground = true;
+            try { t.SetApartmentState(ApartmentState.MTA); } catch { }
+            t.Start();
+        }
+
+        private static void DetectDocPreviewPane(IntPtr agyHwnd)
+        {
+            bool found = false;
+            Native.RECT foundRect = new Native.RECT();
+            string kind = "";
+
+            try
+            {
+                AutomationElement root = AutomationElement.FromHandle(agyHwnd);
+                if (root != null)
+                {
+                    Rect agyBounds = root.Current.BoundingRectangle;
+
+                    // 1. Direct iframe Document named "文档预览"
+                    System.Windows.Automation.Condition docCond = new System.Windows.Automation.AndCondition(
+                        new System.Windows.Automation.PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document),
+                        new System.Windows.Automation.PropertyCondition(AutomationElement.NameProperty, "文档预览")
+                    );
+                    AutomationElement docEl = root.FindFirst(TreeScope.Descendants, docCond);
+                    if (docEl != null && !docEl.Current.IsOffscreen)
+                    {
+                        Rect r = docEl.Current.BoundingRectangle;
+                        if (!r.IsEmpty && r.Width >= 140 && r.Height >= 140 && agyBounds.Width > 0)
+                        {
+                            found = true;
+                            kind = "uia_document";
+                            foundRect.Left = (int)Math.Floor(r.Left);
+                            foundRect.Top = (int)Math.Floor(r.Top);
+                            foundRect.Right = (int)Math.Ceiling(r.Right);
+                            foundRect.Bottom = (int)Math.Ceiling(r.Bottom);
+                        }
+                    }
+
+                    // 2. Fallback: active TabItem named "文档预览" -> compute right-pane viewport below tab bar
+                    if (!found)
+                    {
+                        System.Windows.Automation.Condition tabCond = new System.Windows.Automation.AndCondition(
+                            new System.Windows.Automation.PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.TabItem),
+                            new System.Windows.Automation.PropertyCondition(AutomationElement.NameProperty, "文档预览")
+                        );
+                        AutomationElement tabEl = root.FindFirst(TreeScope.Descendants, tabCond);
+                        if (tabEl != null && !tabEl.Current.IsOffscreen)
+                        {
+                            bool selected = false;
+                            try
+                            {
+                                object pat;
+                                if (tabEl.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pat))
+                                {
+                                    selected = ((SelectionItemPattern)pat).Current.IsSelected;
+                                }
+                            }
+                            catch { }
+
+                            if (selected)
+                            {
+                                Rect tabStripRect = tabEl.Current.BoundingRectangle;
+                                try
+                                {
+                                    AutomationElement parent = TreeWalker.ControlViewWalker.GetParent(tabEl);
+                                    if (parent != null && parent.Current.ControlType == ControlType.Tab)
+                                    {
+                                        Rect pr = parent.Current.BoundingRectangle;
+                                        if (!pr.IsEmpty && pr.Width >= 160) tabStripRect = pr;
+                                    }
+                                }
+                                catch { }
+
+                                if (!tabStripRect.IsEmpty && !agyBounds.IsEmpty)
+                                {
+                                    found = true;
+                                    kind = "uia_tab";
+                                    foundRect.Left = (int)Math.Floor(tabStripRect.Left);
+                                    foundRect.Top = (int)Math.Floor(tabStripRect.Bottom);
+                                    foundRect.Right = (int)Math.Ceiling(agyBounds.Right) - 2;
+                                    foundRect.Bottom = (int)Math.Ceiling(agyBounds.Bottom) - 2;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            lock (_docLock)
+            {
+                _docVisible = found;
+                _docMatchKind = kind;
+                if (found) _docScreenRect = foundRect;
             }
         }
 
@@ -1132,6 +1354,15 @@ namespace WallpaperStudioCompanion
                     _state.hudShowPercent = b;
                     hudDirty = true;
                 }
+            }
+            if (patch.ContainsKey("docMaskEnabled"))
+            {
+                bool b;
+                if (bool.TryParse(Convert.ToString(patch["docMaskEnabled"]), out b)) _state.docMaskEnabled = b;
+            }
+            if (patch.ContainsKey("docMaskColor"))
+            {
+                _state.docMaskColor = Convert.ToString(patch["docMaskColor"]);
             }
 
             if (alphaDirty && _state.backdropEnabled && _trackedAgy != IntPtr.Zero && Native.IsWindowVisible(_trackedAgy) && !Native.IsIconic(_trackedAgy))
@@ -1258,34 +1489,40 @@ namespace WallpaperStudioCompanion
                 return;
             }
 
-            bool needDiscover = forceDiscovery ||
-                _trackedAgy == IntPtr.Zero ||
-                !Native.IsWindow(_trackedAgy) ||
-                !Native.IsWindowVisible(_trackedAgy) ||
-                (DateTime.UtcNow - _lastWindowDiscovery).TotalMilliseconds >= 450;
-
-            if (needDiscover)
+            if (!_isMovingOrSizing)
             {
-                _lastWindowDiscovery = DateTime.UtcNow;
-                IntPtr agy = Native.PickPrimaryAntigravityWindow();
-                if (agy != _trackedAgy && _trackedAgy != IntPtr.Zero)
+                bool needDiscover = forceDiscovery ||
+                    _trackedAgy == IntPtr.Zero ||
+                    !Native.IsWindow(_trackedAgy) ||
+                    !Native.IsWindowVisible(_trackedAgy) ||
+                    (DateTime.UtcNow - _lastWindowDiscovery).TotalMilliseconds >= 450;
+
+                if (needDiscover)
                 {
-                    Native.SetWindowAlpha(_trackedAgy, 255);
-                    _lastAppliedAlpha = 255;
+                    _lastWindowDiscovery = DateTime.UtcNow;
+                    IntPtr agy = Native.PickPrimaryAntigravityWindow();
+                    if (agy != _trackedAgy && _trackedAgy != IntPtr.Zero)
+                    {
+                        Native.SetWindowAlpha(_trackedAgy, 255);
+                        _lastAppliedAlpha = 255;
+                        _lastInsetCalib = DateTime.MinValue;
+                    }
+                    _trackedAgy = agy;
                 }
-                _trackedAgy = agy;
             }
 
             IntPtr tracked = _trackedAgy;
             if (tracked == IntPtr.Zero || !Native.IsWindow(tracked) || !Native.IsWindowVisible(tracked) || Native.IsIconic(tracked))
             {
+                StopDragBoost();
                 RestoreAndHide();
                 return;
             }
 
-            // Detect Antigravity window title changes for instant conversation switching
-            if (!string.IsNullOrEmpty(_activeWinPath))
+            // Detect Antigravity window title changes when not dragging
+            if (!_isMovingOrSizing && !string.IsNullOrEmpty(_activeWinPath) && (DateTime.UtcNow - _lastTitlePoll).TotalMilliseconds >= 80)
             {
+                _lastTitlePoll = DateTime.UtcNow;
                 try
                 {
                     StringBuilder titleBuf = new StringBuilder(256);
@@ -1304,11 +1541,42 @@ namespace WallpaperStudioCompanion
                 catch { }
             }
 
-            Native.RECT rect;
-            if (!Native.GetVisibleBounds(tracked, out rect) || rect.Width < 200 || rect.Height < 140)
+            // Use instantaneous GetWindowRect + cached DWM border inset (eliminates 1-2 frame DwmGetWindowAttribute lag!)
+            Native.RECT rawRect;
+            if (!Native.GetWindowRect(tracked, out rawRect) || rawRect.Width < 200 || rawRect.Height < 140)
             {
+                StopDragBoost();
                 RestoreAndHide();
                 return;
+            }
+
+            bool sizeChanged = (rawRect.Width != _lastRawW || rawRect.Height != _lastRawH);
+            if (sizeChanged || (!_isMovingOrSizing && (DateTime.UtcNow - _lastInsetCalib).TotalMilliseconds >= 600))
+            {
+                _lastRawW = rawRect.Width;
+                _lastRawH = rawRect.Height;
+                _lastInsetCalib = DateTime.UtcNow;
+                _cachedDpiScale = Native.GetDpiScale(tracked);
+                Native.RECT extRect;
+                if (Native.GetVisibleBounds(tracked, out extRect) && extRect.Width >= 200 && extRect.Height >= 140)
+                {
+                    _insetL = Math.Max(0, Math.Min(24, extRect.Left - rawRect.Left));
+                    _insetT = Math.Max(0, Math.Min(24, extRect.Top - rawRect.Top));
+                    _insetR = Math.Max(0, Math.Min(24, rawRect.Right - extRect.Right));
+                    _insetB = Math.Max(0, Math.Min(24, rawRect.Bottom - extRect.Bottom));
+                }
+            }
+
+            Native.RECT rect = new Native.RECT
+            {
+                Left = rawRect.Left + _insetL,
+                Top = rawRect.Top + _insetT,
+                Right = rawRect.Right - _insetR,
+                Bottom = rawRect.Bottom - _insetB
+            };
+            if (rect.Width < 200 || rect.Height < 140)
+            {
+                rect = rawRect;
             }
 
             bool wantBackdrop = _state.backdropEnabled && !string.IsNullOrEmpty(_state.stageUrl) && _backdrop.Handle != IntPtr.Zero;
@@ -1324,9 +1592,53 @@ namespace WallpaperStudioCompanion
                     _lastAppliedAlpha = alpha;
                 }
 
-                double bgScale = Native.GetDpiScale(tracked);
-                _backdrop.SyncWpfSize(rect.Width, rect.Height, bgScale);
+                if (!_lastBackdropShown || rect.Width != _lastBackdropRect.Width || rect.Height != _lastBackdropRect.Height)
+                {
+                    _backdrop.SyncWpfSize(rect.Width, rect.Height, _cachedDpiScale);
+                }
                 _backdrop.SetPlaybackActive(true);
+
+                // Sync doc-preview region mask (relative to backdrop window in CSS DIPs)
+                if (_state.docMaskEnabled)
+                {
+                    bool dVis = false;
+                    Native.RECT dRect = new Native.RECT();
+                    lock (_docLock)
+                    {
+                        dVis = _docVisible;
+                        dRect = _docScreenRect;
+                    }
+                    if (dVis)
+                    {
+                        int cl = Math.Max(rect.Left, dRect.Left);
+                        int ct = Math.Max(rect.Top, dRect.Top);
+                        int cr = Math.Min(rect.Right, dRect.Right);
+                        int cb = Math.Min(rect.Bottom, dRect.Bottom);
+                        if (cr - cl >= 80 && cb - ct >= 80)
+                        {
+                            double scale = _cachedDpiScale > 0 ? _cachedDpiScale : 1.0;
+                            _backdrop.PushDocMask(
+                                true,
+                                (cl - rect.Left) / scale,
+                                (ct - rect.Top) / scale,
+                                (cr - cl) / scale,
+                                (cb - ct) / scale,
+                                _state.docMaskColor);
+                        }
+                        else
+                        {
+                            _backdrop.PushDocMask(false, 0, 0, 0, 0, "");
+                        }
+                    }
+                    else
+                    {
+                        _backdrop.PushDocMask(false, 0, 0, 0, 0, "");
+                    }
+                }
+                else
+                {
+                    _backdrop.PushDocMask(false, 0, 0, 0, 0, "");
+                }
             }
             else
             {
@@ -1371,8 +1683,7 @@ namespace WallpaperStudioCompanion
             Native.RECT hudRect = new Native.RECT();
             if (wantHud)
             {
-                double scale = Native.GetDpiScale(tracked);
-                int pxSize = (int)Math.Round(_hud.GetSizeDip() * scale);
+                int pxSize = (int)Math.Round(_hud.GetSizeDip() * _cachedDpiScale);
                 int hx = rect.Right + _hud.OffsetX;
                 int hy = rect.Bottom + _hud.OffsetY;
                 hx = Math.Max(rect.Left + 8, Math.Min(rect.Right - pxSize - 8, hx));
