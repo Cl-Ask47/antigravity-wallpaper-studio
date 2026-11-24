@@ -353,6 +353,7 @@ namespace WallpaperStudioCompanion
         public bool WebViewReady { get { return _wvReady; } }
         public string WebViewError { get { return _wvError; } }
         public string ActiveUrl { get { return _activeUrl; } }
+        public string WebViewDipSize { get { return string.Format("{0:0}x{1:0} (bg {2:0}x{3:0})", _webView.ActualWidth, _webView.ActualHeight, ActualWidth, ActualHeight); } }
 
         public BackdropWindow()
         {
@@ -402,6 +403,8 @@ namespace WallpaperStudioCompanion
             SourceInitialized += delegate
             {
                 _hwnd = new WindowInteropHelper(this).Handle;
+                ClearValue(WidthProperty);
+                ClearValue(HeightProperty);
                 int ex = Native.GetWindowLong(_hwnd, Native.GWL_EXSTYLE);
                 Native.SetWindowLong(
                     _hwnd,
@@ -526,31 +529,19 @@ namespace WallpaperStudioCompanion
             SyncWebViewNavigation();
         }
 
-        private int _lastDipW = 0;
-        private int _lastDipH = 0;
         private double _lastDipScale = 0;
 
         public void SyncWpfSize(int physW, int physH, double dpiScale)
         {
             if (dpiScale <= 0) dpiScale = 1.0;
-            int w = Math.Max(100, (int)Math.Round(physW / dpiScale));
-            int h = Math.Max(100, (int)Math.Round(physH / dpiScale));
-            if (w == _lastDipW && h == _lastDipH && Math.Abs(dpiScale - _lastDipScale) < 0.01) return;
-            _lastDipW = w;
-            _lastDipH = h;
+            if (Math.Abs(dpiScale - _lastDipScale) < 0.01) return;
             _lastDipScale = dpiScale;
             try
             {
-                Width = w;
-                Height = h;
                 if (_wvReady)
                 {
                     _webView.ZoomFactor = 1.0;
-                    _webView.Width = w;
-                    _webView.Height = h;
                 }
-                InvalidateMeasure();
-                UpdateLayout();
             }
             catch { }
         }
@@ -834,6 +825,7 @@ namespace WallpaperStudioCompanion
         private static IntPtr _trackedAgy = IntPtr.Zero;
         private static DateTime _lastWindowDiscovery = DateTime.MinValue;
         private static DateTime _lastInsetCalib = DateTime.MinValue;
+        private static DateTime _lastResizeApply = DateTime.MinValue;
         private static DateTime _lastTitlePoll = DateTime.MinValue;
         private static int _insetL = 0, _insetT = 0, _insetR = 0, _insetB = 0;
         private static double _cachedDpiScale = 1.0;
@@ -888,6 +880,7 @@ namespace WallpaperStudioCompanion
                 obj["backdropVis"] = _backdrop != null && _backdrop.Handle != IntPtr.Zero && Native.IsWindowVisible(_backdrop.Handle);
                 obj["backdropRect"] = string.Format("{0},{1} {2}x{3}", br.Left, br.Top, br.Width, br.Height);
                 obj["wvReady"] = _backdrop != null && _backdrop.WebViewReady;
+                obj["wvDip"] = _backdrop != null ? _backdrop.WebViewDipSize : "";
                 obj["wvError"] = _backdrop != null ? (_backdrop.WebViewError ?? "") : "";
                 obj["activeUrl"] = _backdrop != null ? (_backdrop.ActiveUrl ?? "") : "";
                 obj["backdropEnabled"] = _state.backdropEnabled;
@@ -1068,8 +1061,8 @@ namespace WallpaperStudioCompanion
             };
             geomTimer.Start();
 
-            _dragTimer = new DispatcherTimer(DispatcherPriority.Send);
-            _dragTimer.Interval = TimeSpan.FromMilliseconds(4);
+            _dragTimer = new DispatcherTimer(DispatcherPriority.Input);
+            _dragTimer.Interval = TimeSpan.FromMilliseconds(8);
             _dragTimer.Tick += delegate
             {
                 if (_isMovingOrSizing) SyncGeometry(false);
@@ -1188,6 +1181,9 @@ namespace WallpaperStudioCompanion
             {
                 StopDragBoost();
                 _lastInsetCalib = DateTime.MinValue;
+                _lastRawW = 0;
+                _lastRawH = 0;
+                _lastResizeApply = DateTime.MinValue;
                 SyncGeometry(false);
                 return;
             }
@@ -1620,7 +1616,7 @@ namespace WallpaperStudioCompanion
             }
 
             bool sizeChanged = (rawRect.Width != _lastRawW || rawRect.Height != _lastRawH);
-            if (sizeChanged || (!_isMovingOrSizing && (DateTime.UtcNow - _lastInsetCalib).TotalMilliseconds >= 600))
+            if (!_isMovingOrSizing && (sizeChanged || (DateTime.UtcNow - _lastInsetCalib).TotalMilliseconds >= 600))
             {
                 _lastRawW = rawRect.Width;
                 _lastRawH = rawRect.Height;
@@ -1726,16 +1722,35 @@ namespace WallpaperStudioCompanion
             bool needBackdropOp = false;
             IntPtr bgInsertAfter = IntPtr.Zero;
             uint bgFlags = Native.SWP_NOACTIVATE;
+            Native.RECT bgTargetRect = rect;
             if (wantBackdrop)
             {
+                bool bgSizeChanging = !_lastBackdropShown || rect.Width != _lastBackdropRect.Width || rect.Height != _lastBackdropRect.Height;
+                if (_isMovingOrSizing && _lastBackdropShown && bgSizeChanging)
+                {
+                    if ((DateTime.UtcNow - _lastResizeApply).TotalMilliseconds < 36)
+                    {
+                        bgTargetRect.Right = bgTargetRect.Left + _lastBackdropRect.Width;
+                        bgTargetRect.Bottom = bgTargetRect.Top + _lastBackdropRect.Height;
+                    }
+                    else
+                    {
+                        _lastResizeApply = DateTime.UtcNow;
+                    }
+                }
+                else if (bgSizeChanging)
+                {
+                    _lastResizeApply = DateTime.UtcNow;
+                }
+
                 bool zOk = Native.GetWindow(tracked, Native.GW_HWNDNEXT) == _backdrop.Handle;
-                bool rOk = _lastBackdropShown && RectEqual(_lastBackdropRect, rect);
+                bool rOk = _lastBackdropShown && RectEqual(_lastBackdropRect, bgTargetRect);
                 if (!zOk || !rOk)
                 {
                     needBackdropOp = true;
                     if (!zOk) bgInsertAfter = tracked;
                     else bgFlags |= Native.SWP_NOZORDER;
-                    if (_lastBackdropShown && _lastBackdropRect.Width == rect.Width && _lastBackdropRect.Height == rect.Height)
+                    if (_lastBackdropShown && _lastBackdropRect.Width == bgTargetRect.Width && _lastBackdropRect.Height == bgTargetRect.Height)
                         bgFlags |= Native.SWP_NOSIZE;
                     if (!_lastBackdropShown) bgFlags |= Native.SWP_SHOWWINDOW;
                 }
@@ -1789,7 +1804,7 @@ namespace WallpaperStudioCompanion
             {
                 if (needBackdropOp)
                 {
-                    hdwp = Native.DeferWindowPos(hdwp, _backdrop.Handle, bgInsertAfter, rect.Left, rect.Top, rect.Width, rect.Height, bgFlags);
+                    hdwp = Native.DeferWindowPos(hdwp, _backdrop.Handle, bgInsertAfter, bgTargetRect.Left, bgTargetRect.Top, bgTargetRect.Width, bgTargetRect.Height, bgFlags);
                 }
                 if (needHudOp && hdwp != IntPtr.Zero)
                 {
@@ -1802,14 +1817,14 @@ namespace WallpaperStudioCompanion
             }
             else
             {
-                if (needBackdropOp) Native.SetWindowPos(_backdrop.Handle, bgInsertAfter, rect.Left, rect.Top, rect.Width, rect.Height, bgFlags);
+                if (needBackdropOp) Native.SetWindowPos(_backdrop.Handle, bgInsertAfter, bgTargetRect.Left, bgTargetRect.Top, bgTargetRect.Width, bgTargetRect.Height, bgFlags);
                 if (needHudOp) Native.SetWindowPos(_hud.Handle, hudInsertAfter, hudRect.Left, hudRect.Top, hudRect.Width, hudRect.Height, hudFlags);
             }
 
             if (needBackdropOp)
             {
                 _lastBackdropShown = wantBackdrop;
-                if (wantBackdrop) _lastBackdropRect = rect;
+                if (wantBackdrop) _lastBackdropRect = bgTargetRect;
             }
             if (needHudOp)
             {
