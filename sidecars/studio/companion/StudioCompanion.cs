@@ -63,6 +63,7 @@ namespace WallpaperStudioCompanion
     internal static class Native
     {
         public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+        public delegate void WinEventDelegate(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
 
         [StructLayout(LayoutKind.Sequential)]
         public struct RECT
@@ -96,9 +97,19 @@ namespace WallpaperStudioCompanion
         public const uint SWP_NOACTIVATE = 0x0010;
         public const uint SWP_SHOWWINDOW = 0x0040;
         public const uint SWP_HIDEWINDOW = 0x0080;
+        public const uint SWP_NOCOPYBITS = 0x0100;
 
+        public const uint GW_HWNDNEXT = 2;
         public const uint GW_HWNDPREV = 3;
         public static readonly IntPtr HWND_TOP = IntPtr.Zero;
+
+        public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+        public const uint EVENT_SYSTEM_MOVESIZESTART = 0x000A;
+        public const uint EVENT_SYSTEM_MOVESIZEEND = 0x000B;
+        public const uint EVENT_OBJECT_REORDER = 0x8004;
+        public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
+        public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+        public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
 
         public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
         public const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
@@ -106,6 +117,21 @@ namespace WallpaperStudioCompanion
 
         [DllImport("user32.dll")]
         public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr hmodWinEventProc, WinEventDelegate lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
+
+        [DllImport("user32.dll")]
+        public static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr BeginDeferWindowPos(int nNumWindows);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr DeferWindowPos(IntPtr hWinPosInfo, IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
+
+        [DllImport("user32.dll")]
+        public static extern bool EndDeferWindowPos(IntPtr hWinPosInfo);
 
         [DllImport("user32.dll")]
         public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
@@ -752,6 +778,11 @@ namespace WallpaperStudioCompanion
         private static BackdropWindow _backdrop;
         private static RingHudWindow _hud;
         private static IntPtr _trackedAgy = IntPtr.Zero;
+        private static DateTime _lastWindowDiscovery = DateTime.MinValue;
+        private static Native.RECT _lastBackdropRect = new Native.RECT();
+        private static bool _lastBackdropShown = false;
+        private static Native.RECT _lastHudRect = new Native.RECT();
+        private static bool _lastHudShown = false;
         private static string _lastReportedTitle = null;
         private static byte _lastAppliedAlpha = 255;
         private static CompanionState _state = new CompanionState();
@@ -760,6 +791,9 @@ namespace WallpaperStudioCompanion
         private static DateTime _lastDiagWrite = DateTime.MinValue;
         private static bool _suspendedBySystem = false;
         private static System.Threading.Mutex _singleInstanceMutex = null;
+        private static IntPtr _hookLoc = IntPtr.Zero;
+        private static IntPtr _hookFg = IntPtr.Zero;
+        private static Native.WinEventDelegate _winEventProc = null;
 
         private static void WriteDiagSnapshot()
         {
@@ -904,12 +938,12 @@ namespace WallpaperStudioCompanion
             _hud.OffsetChanged += delegate(int ox, int oy)
             {
                 SaveHudOffset(ox, oy);
-                SyncGeometry();
+                SyncGeometry(true);
             };
             _hud.ResetRequested += delegate
             {
                 SaveHudOffset(_hud.OffsetX, _hud.OffsetY);
-                SyncGeometry();
+                SyncGeometry(true);
             };
 
             _backdrop.Show();
@@ -938,16 +972,25 @@ namespace WallpaperStudioCompanion
             };
             stateTimer.Start();
 
-            DispatcherTimer geomTimer = new DispatcherTimer();
-            geomTimer.Interval = TimeSpan.FromMilliseconds(33);
+            DispatcherTimer geomTimer = new DispatcherTimer(DispatcherPriority.Send);
+            geomTimer.Interval = TimeSpan.FromMilliseconds(16);
             geomTimer.Tick += delegate
             {
-                SyncGeometry();
+                SyncGeometry(false);
             };
             geomTimer.Start();
 
+            CompositionTarget.Rendering += delegate
+            {
+                SyncGeometry(false);
+            };
+
+            InstallWinEventHooks();
+
             app.Exit += delegate
             {
+                try { if (_hookLoc != IntPtr.Zero) Native.UnhookWinEvent(_hookLoc); } catch { }
+                try { if (_hookFg != IntPtr.Zero) Native.UnhookWinEvent(_hookFg); } catch { }
                 try { if (_udpServer != null) _udpServer.Close(); } catch { }
                 RestoreAndHide();
             };
@@ -959,8 +1002,35 @@ namespace WallpaperStudioCompanion
             };
 
             PollStateFile();
-            SyncGeometry();
+            SyncGeometry(true);
             app.Run();
+        }
+
+        private static void InstallWinEventHooks()
+        {
+            try
+            {
+                _winEventProc = new Native.WinEventDelegate(OnWinEvent);
+                uint flags = Native.WINEVENT_OUTOFCONTEXT | Native.WINEVENT_SKIPOWNPROCESS;
+                _hookFg = Native.SetWinEventHook(Native.EVENT_SYSTEM_FOREGROUND, Native.EVENT_SYSTEM_MOVESIZEEND, IntPtr.Zero, _winEventProc, 0, 0, flags);
+                _hookLoc = Native.SetWinEventHook(Native.EVENT_OBJECT_REORDER, Native.EVENT_OBJECT_LOCATIONCHANGE, IntPtr.Zero, _winEventProc, 0, 0, flags);
+            }
+            catch { }
+        }
+
+        private static void OnWinEvent(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
+        {
+            if (idObject != 0 || idChild != 0) return;
+            if (eventType == Native.EVENT_SYSTEM_FOREGROUND)
+            {
+                _lastWindowDiscovery = DateTime.MinValue;
+                SyncGeometry(true);
+                return;
+            }
+            if (hwnd == _trackedAgy && _trackedAgy != IntPtr.Zero)
+            {
+                SyncGeometry(false);
+            }
         }
 
         private static void StartUdpLiveListener(Dispatcher dispatcher)
@@ -1077,7 +1147,7 @@ namespace WallpaperStudioCompanion
             if (hudDirty && _hud != null)
             {
                 _hud.RenderState(_state);
-                SyncGeometry();
+                SyncGeometry(true);
             }
         }
 
@@ -1158,22 +1228,29 @@ namespace WallpaperStudioCompanion
             catch { }
             try
             {
-                if (_backdrop != null && _backdrop.Handle != IntPtr.Zero)
+                if (_backdrop != null && _backdrop.Handle != IntPtr.Zero && _lastBackdropShown)
                 {
                     _backdrop.SetPlaybackActive(false);
                     Native.SetWindowPos(_backdrop.Handle, IntPtr.Zero, 0, 0, 0, 0,
                         Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_HIDEWINDOW);
+                    _lastBackdropShown = false;
                 }
-                if (_hud != null && _hud.Handle != IntPtr.Zero)
+                if (_hud != null && _hud.Handle != IntPtr.Zero && _lastHudShown)
                 {
                     Native.SetWindowPos(_hud.Handle, IntPtr.Zero, 0, 0, 0, 0,
                         Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_HIDEWINDOW);
+                    _lastHudShown = false;
                 }
             }
             catch { }
         }
 
-        private static void SyncGeometry()
+        private static bool RectEqual(Native.RECT a, Native.RECT b)
+        {
+            return a.Left == b.Left && a.Top == b.Top && a.Right == b.Right && a.Bottom == b.Bottom;
+        }
+
+        private static void SyncGeometry(bool forceDiscovery)
         {
             if (_suspendedBySystem || _state.shutdown)
             {
@@ -1181,34 +1258,45 @@ namespace WallpaperStudioCompanion
                 return;
             }
 
-            IntPtr agy = Native.PickPrimaryAntigravityWindow();
-            if (agy != _trackedAgy && _trackedAgy != IntPtr.Zero)
-            {
-                Native.SetWindowAlpha(_trackedAgy, 255);
-                _lastAppliedAlpha = 255;
-            }
-            _trackedAgy = agy;
+            bool needDiscover = forceDiscovery ||
+                _trackedAgy == IntPtr.Zero ||
+                !Native.IsWindow(_trackedAgy) ||
+                !Native.IsWindowVisible(_trackedAgy) ||
+                (DateTime.UtcNow - _lastWindowDiscovery).TotalMilliseconds >= 450;
 
-            if (agy == IntPtr.Zero || !Native.IsWindow(agy) || !Native.IsWindowVisible(agy) || Native.IsIconic(agy))
+            if (needDiscover)
+            {
+                _lastWindowDiscovery = DateTime.UtcNow;
+                IntPtr agy = Native.PickPrimaryAntigravityWindow();
+                if (agy != _trackedAgy && _trackedAgy != IntPtr.Zero)
+                {
+                    Native.SetWindowAlpha(_trackedAgy, 255);
+                    _lastAppliedAlpha = 255;
+                }
+                _trackedAgy = agy;
+            }
+
+            IntPtr tracked = _trackedAgy;
+            if (tracked == IntPtr.Zero || !Native.IsWindow(tracked) || !Native.IsWindowVisible(tracked) || Native.IsIconic(tracked))
             {
                 RestoreAndHide();
                 return;
             }
 
-            // Detect Antigravity window title changes immediately (33ms cadence) for instant conversation switching
+            // Detect Antigravity window title changes for instant conversation switching
             if (!string.IsNullOrEmpty(_activeWinPath))
             {
                 try
                 {
                     StringBuilder titleBuf = new StringBuilder(256);
-                    Native.GetWindowText(agy, titleBuf, 256);
+                    Native.GetWindowText(tracked, titleBuf, 256);
                     string curTitle = titleBuf.ToString();
                     if (curTitle != _lastReportedTitle)
                     {
                         _lastReportedTitle = curTitle;
                         var wObj = new Dictionary<string, object>();
                         wObj["windowTitle"] = curTitle;
-                        wObj["hwnd"] = agy.ToInt64();
+                        wObj["hwnd"] = tracked.ToInt64();
                         wObj["ts"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                         File.WriteAllText(_activeWinPath, _json.Serialize(wObj), Encoding.UTF8);
                     }
@@ -1217,76 +1305,136 @@ namespace WallpaperStudioCompanion
             }
 
             Native.RECT rect;
-            if (!Native.GetVisibleBounds(agy, out rect) || rect.Width < 200 || rect.Height < 140)
+            if (!Native.GetVisibleBounds(tracked, out rect) || rect.Width < 200 || rect.Height < 140)
             {
                 RestoreAndHide();
                 return;
             }
 
-            bool wantBackdrop = _state.backdropEnabled && !string.IsNullOrEmpty(_state.stageUrl);
-            if (wantBackdrop && _backdrop.Handle != IntPtr.Zero)
+            bool wantBackdrop = _state.backdropEnabled && !string.IsNullOrEmpty(_state.stageUrl) && _backdrop.Handle != IntPtr.Zero;
+            bool wantHud = _state.hudEnabled && _hud.Handle != IntPtr.Zero;
+
+            if (wantBackdrop)
             {
                 int translucency = Math.Max(0, Math.Min(55, _state.windowTranslucency));
                 byte alpha = (byte)Math.Round(255.0 * (100 - translucency) / 100.0);
                 if (alpha != _lastAppliedAlpha)
                 {
-                    Native.SetWindowAlpha(agy, alpha);
+                    Native.SetWindowAlpha(tracked, alpha);
                     _lastAppliedAlpha = alpha;
                 }
 
-                double bgScale = Native.GetDpiScale(agy);
+                double bgScale = Native.GetDpiScale(tracked);
                 _backdrop.SyncWpfSize(rect.Width, rect.Height, bgScale);
                 _backdrop.SetPlaybackActive(true);
-                Native.SetWindowPos(
-                    _backdrop.Handle,
-                    agy,
-                    rect.Left,
-                    rect.Top,
-                    rect.Width,
-                    rect.Height,
-                    Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
             }
             else
             {
                 if (_lastAppliedAlpha != 255)
                 {
-                    Native.SetWindowAlpha(agy, 255);
+                    Native.SetWindowAlpha(tracked, 255);
                     _lastAppliedAlpha = 255;
                 }
                 if (_backdrop.Handle != IntPtr.Zero)
                 {
                     _backdrop.SetPlaybackActive(false);
-                    Native.SetWindowPos(_backdrop.Handle, IntPtr.Zero, 0, 0, 0, 0,
-                        Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_HIDEWINDOW);
                 }
             }
 
-            if (_state.hudEnabled && _hud.Handle != IntPtr.Zero)
+            // Compute desired backdrop & HUD operations and commit atomically with BeginDeferWindowPos
+            bool needBackdropOp = false;
+            IntPtr bgInsertAfter = IntPtr.Zero;
+            uint bgFlags = Native.SWP_NOACTIVATE;
+            if (wantBackdrop)
             {
-                double scale = Native.GetDpiScale(agy);
+                bool zOk = Native.GetWindow(tracked, Native.GW_HWNDNEXT) == _backdrop.Handle;
+                bool rOk = _lastBackdropShown && RectEqual(_lastBackdropRect, rect);
+                if (!zOk || !rOk)
+                {
+                    needBackdropOp = true;
+                    if (!zOk) bgInsertAfter = tracked;
+                    else bgFlags |= Native.SWP_NOZORDER;
+                    if (_lastBackdropShown && _lastBackdropRect.Width == rect.Width && _lastBackdropRect.Height == rect.Height)
+                        bgFlags |= Native.SWP_NOSIZE;
+                    if (!_lastBackdropShown) bgFlags |= Native.SWP_SHOWWINDOW;
+                }
+            }
+            else if (_lastBackdropShown && _backdrop.Handle != IntPtr.Zero)
+            {
+                needBackdropOp = true;
+                bgFlags |= Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_HIDEWINDOW;
+            }
+
+            bool needHudOp = false;
+            IntPtr hudInsertAfter = IntPtr.Zero;
+            uint hudFlags = Native.SWP_NOACTIVATE;
+            Native.RECT hudRect = new Native.RECT();
+            if (wantHud)
+            {
+                double scale = Native.GetDpiScale(tracked);
                 int pxSize = (int)Math.Round(_hud.GetSizeDip() * scale);
                 int hx = rect.Right + _hud.OffsetX;
                 int hy = rect.Bottom + _hud.OffsetY;
-
                 hx = Math.Max(rect.Left + 8, Math.Min(rect.Right - pxSize - 8, hx));
                 hy = Math.Max(rect.Top + 36, Math.Min(rect.Bottom - pxSize - 8, hy));
+                hudRect.Left = hx;
+                hudRect.Top = hy;
+                hudRect.Right = hx + pxSize;
+                hudRect.Bottom = hy + pxSize;
 
-                IntPtr insertAfter = Native.GetWindow(agy, Native.GW_HWNDPREV);
-                if (insertAfter == _hud.Handle)
+                IntPtr prevWin = Native.GetWindow(tracked, Native.GW_HWNDPREV);
+                bool zOk = prevWin == _hud.Handle;
+                bool rOk = _lastHudShown && RectEqual(_lastHudRect, hudRect);
+                if (!zOk || !rOk)
                 {
-                    Native.SetWindowPos(_hud.Handle, IntPtr.Zero, hx, hy, pxSize, pxSize,
-                        Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
-                }
-                else
-                {
-                    Native.SetWindowPos(_hud.Handle, insertAfter == IntPtr.Zero ? Native.HWND_TOP : insertAfter,
-                        hx, hy, pxSize, pxSize, Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
+                    needHudOp = true;
+                    if (!zOk) hudInsertAfter = (prevWin == IntPtr.Zero) ? Native.HWND_TOP : prevWin;
+                    else hudFlags |= Native.SWP_NOZORDER;
+                    if (_lastHudShown && _lastHudRect.Width == hudRect.Width && _lastHudRect.Height == hudRect.Height)
+                        hudFlags |= Native.SWP_NOSIZE;
+                    if (!_lastHudShown) hudFlags |= Native.SWP_SHOWWINDOW;
                 }
             }
-            else if (_hud.Handle != IntPtr.Zero)
+            else if (_lastHudShown && _hud.Handle != IntPtr.Zero)
             {
-                Native.SetWindowPos(_hud.Handle, IntPtr.Zero, 0, 0, 0, 0,
-                    Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_HIDEWINDOW);
+                needHudOp = true;
+                hudFlags |= Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_HIDEWINDOW;
+            }
+
+            if (!needBackdropOp && !needHudOp) return;
+
+            int opCount = (needBackdropOp ? 1 : 0) + (needHudOp ? 1 : 0);
+            IntPtr hdwp = Native.BeginDeferWindowPos(opCount);
+            if (hdwp != IntPtr.Zero)
+            {
+                if (needBackdropOp)
+                {
+                    hdwp = Native.DeferWindowPos(hdwp, _backdrop.Handle, bgInsertAfter, rect.Left, rect.Top, rect.Width, rect.Height, bgFlags);
+                }
+                if (needHudOp && hdwp != IntPtr.Zero)
+                {
+                    hdwp = Native.DeferWindowPos(hdwp, _hud.Handle, hudInsertAfter, hudRect.Left, hudRect.Top, hudRect.Width, hudRect.Height, hudFlags);
+                }
+                if (hdwp != IntPtr.Zero)
+                {
+                    Native.EndDeferWindowPos(hdwp);
+                }
+            }
+            else
+            {
+                if (needBackdropOp) Native.SetWindowPos(_backdrop.Handle, bgInsertAfter, rect.Left, rect.Top, rect.Width, rect.Height, bgFlags);
+                if (needHudOp) Native.SetWindowPos(_hud.Handle, hudInsertAfter, hudRect.Left, hudRect.Top, hudRect.Width, hudRect.Height, hudFlags);
+            }
+
+            if (needBackdropOp)
+            {
+                _lastBackdropShown = wantBackdrop;
+                if (wantBackdrop) _lastBackdropRect = rect;
+            }
+            if (needHudOp)
+            {
+                _lastHudShown = wantHud;
+                if (wantHud) _lastHudRect = hudRect;
             }
         }
     }

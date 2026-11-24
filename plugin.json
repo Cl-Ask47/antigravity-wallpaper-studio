@@ -2,7 +2,7 @@
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "wallpaper-studio",
   "displayName": "Wallpaper Studio · 壁纸与上下文圆环",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Zero-intrusion Steam Wallpaper Engine backdrop (Video / 3D Scene / Web) & minimalist real-time context usage ring HUD for Google Antigravity.",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
