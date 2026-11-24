@@ -109,7 +109,8 @@ namespace WallpaperStudioCompanion
         public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
         public const uint EVENT_SYSTEM_MOVESIZESTART = 0x000A;
         public const uint EVENT_SYSTEM_MOVESIZEEND = 0x000B;
-        public const uint EVENT_OBJECT_REORDER = 0x8004;
+        public const uint EVENT_SYSTEM_MINIMIZESTART = 0x0016;
+        public const uint EVENT_SYSTEM_MINIMIZEEND = 0x0017;
         public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
         public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
         public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
@@ -441,6 +442,23 @@ namespace WallpaperStudioCompanion
                     _webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
                     _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
                     _webView.CoreWebView2.Settings.IsZoomControlEnabled = false;
+                    _webView.ZoomFactor = 1.0;
+                    _webView.CoreWebView2.NavigationCompleted += delegate
+                    {
+                        try { _webView.ZoomFactor = 1.0; } catch { }
+                    };
+                    _webView.CoreWebView2.ProcessFailed += delegate(object s, CoreWebView2ProcessFailedEventArgs ev)
+                    {
+                        _wvError = "WV2 ProcessFailed: " + ev.ProcessFailedKind;
+                        try
+                        {
+                            Dispatcher.BeginInvoke(new Action(delegate
+                            {
+                                _webView.Visibility = Visibility.Collapsed;
+                            }));
+                        }
+                        catch { }
+                    };
                     _wvReady = true;
                     _wvError = "";
                     SyncWebViewNavigation();
@@ -510,19 +528,27 @@ namespace WallpaperStudioCompanion
 
         private int _lastDipW = 0;
         private int _lastDipH = 0;
+        private double _lastDipScale = 0;
 
         public void SyncWpfSize(int physW, int physH, double dpiScale)
         {
             if (dpiScale <= 0) dpiScale = 1.0;
             int w = Math.Max(100, (int)Math.Round(physW / dpiScale));
             int h = Math.Max(100, (int)Math.Round(physH / dpiScale));
-            if (w == _lastDipW && h == _lastDipH) return;
+            if (w == _lastDipW && h == _lastDipH && Math.Abs(dpiScale - _lastDipScale) < 0.01) return;
             _lastDipW = w;
             _lastDipH = h;
+            _lastDipScale = dpiScale;
             try
             {
                 Width = w;
                 Height = h;
+                if (_wvReady)
+                {
+                    _webView.ZoomFactor = 1.0;
+                    _webView.Width = w;
+                    _webView.Height = h;
+                }
                 InvalidateMeasure();
                 UpdateLayout();
             }
@@ -814,6 +840,8 @@ namespace WallpaperStudioCompanion
         private static int _lastRawW = 0, _lastRawH = 0;
         private static volatile bool _isMovingOrSizing = false;
         private static bool _timerPeriodActive = false;
+        private static bool _renderingSubscribed = false;
+        private static bool _alreadyHidden = false;
         private static Native.RECT _lastBackdropRect = new Native.RECT();
         private static bool _lastBackdropShown = false;
         private static Native.RECT _lastHudRect = new Native.RECT();
@@ -828,6 +856,7 @@ namespace WallpaperStudioCompanion
         private static System.Threading.Mutex _singleInstanceMutex = null;
         private static IntPtr _hookLoc = IntPtr.Zero;
         private static IntPtr _hookFg = IntPtr.Zero;
+        private static IntPtr _hookMin = IntPtr.Zero;
         private static Native.WinEventDelegate _winEventProc = null;
         private static DispatcherTimer _dragTimer = null;
 
@@ -978,7 +1007,16 @@ namespace WallpaperStudioCompanion
                 else if (e.Reason == SessionSwitchReason.SessionUnlock)
                 {
                     _suspendedBySystem = false;
+                    _lastInsetCalib = DateTime.MinValue;
+                    _lastWindowDiscovery = DateTime.MinValue;
                 }
+            };
+            SystemEvents.DisplaySettingsChanged += delegate
+            {
+                _lastInsetCalib = DateTime.MinValue;
+                _lastRawW = 0;
+                _lastRawH = 0;
+                SyncGeometry(true);
             };
 
             _backdrop = new BackdropWindow();
@@ -1022,11 +1060,11 @@ namespace WallpaperStudioCompanion
             };
             stateTimer.Start();
 
-            DispatcherTimer geomTimer = new DispatcherTimer(DispatcherPriority.Send);
-            geomTimer.Interval = TimeSpan.FromMilliseconds(33);
+            DispatcherTimer geomTimer = new DispatcherTimer(DispatcherPriority.Background);
+            geomTimer.Interval = TimeSpan.FromMilliseconds(240);
             geomTimer.Tick += delegate
             {
-                SyncGeometry(false);
+                if (!_isMovingOrSizing) SyncGeometry(false);
             };
             geomTimer.Start();
 
@@ -1038,14 +1076,6 @@ namespace WallpaperStudioCompanion
                 else StopDragBoost();
             };
 
-            CompositionTarget.Rendering += delegate
-            {
-                if (_isMovingOrSizing || _state.backdropEnabled || _state.hudEnabled)
-                {
-                    SyncGeometry(false);
-                }
-            };
-
             InstallWinEventHooks();
             StartUiaDocWatcher();
 
@@ -1055,6 +1085,7 @@ namespace WallpaperStudioCompanion
                 StopDragBoost();
                 try { if (_hookLoc != IntPtr.Zero) Native.UnhookWinEvent(_hookLoc); } catch { }
                 try { if (_hookFg != IntPtr.Zero) Native.UnhookWinEvent(_hookFg); } catch { }
+                try { if (_hookMin != IntPtr.Zero) Native.UnhookWinEvent(_hookMin); } catch { }
                 try { if (_udpServer != null) _udpServer.Close(); } catch { }
                 RestoreAndHide();
             };
@@ -1077,14 +1108,27 @@ namespace WallpaperStudioCompanion
                 _winEventProc = new Native.WinEventDelegate(OnWinEvent);
                 uint flags = Native.WINEVENT_OUTOFCONTEXT | Native.WINEVENT_SKIPOWNPROCESS;
                 _hookFg = Native.SetWinEventHook(Native.EVENT_SYSTEM_FOREGROUND, Native.EVENT_SYSTEM_MOVESIZEEND, IntPtr.Zero, _winEventProc, 0, 0, flags);
-                _hookLoc = Native.SetWinEventHook(Native.EVENT_OBJECT_REORDER, Native.EVENT_OBJECT_LOCATIONCHANGE, IntPtr.Zero, _winEventProc, 0, 0, flags);
+                _hookMin = Native.SetWinEventHook(Native.EVENT_SYSTEM_MINIMIZESTART, Native.EVENT_SYSTEM_MINIMIZEEND, IntPtr.Zero, _winEventProc, 0, 0, flags);
+                _hookLoc = Native.SetWinEventHook(Native.EVENT_OBJECT_LOCATIONCHANGE, Native.EVENT_OBJECT_LOCATIONCHANGE, IntPtr.Zero, _winEventProc, 0, 0, flags);
             }
             catch { }
+        }
+
+        private static void OnRenderingTick(object sender, EventArgs e)
+        {
+            if (_isMovingOrSizing)
+            {
+                SyncGeometry(false);
+            }
         }
 
         private static void StartDragBoost()
         {
             _isMovingOrSizing = true;
+            if (!_renderingSubscribed)
+            {
+                try { CompositionTarget.Rendering += OnRenderingTick; _renderingSubscribed = true; } catch { }
+            }
             if (!_timerPeriodActive)
             {
                 try { Native.timeBeginPeriod(1); _timerPeriodActive = true; } catch { }
@@ -1096,6 +1140,10 @@ namespace WallpaperStudioCompanion
         private static void StopDragBoost()
         {
             _isMovingOrSizing = false;
+            if (_renderingSubscribed)
+            {
+                try { CompositionTarget.Rendering -= OnRenderingTick; _renderingSubscribed = false; } catch { }
+            }
             if (_dragTimer != null && _dragTimer.IsEnabled) _dragTimer.Stop();
             if (_timerPeriodActive)
             {
@@ -1116,6 +1164,20 @@ namespace WallpaperStudioCompanion
                 return;
             }
             if (hwnd != _trackedAgy || _trackedAgy == IntPtr.Zero) return;
+            if (eventType == Native.EVENT_SYSTEM_MINIMIZESTART)
+            {
+                StopDragBoost();
+                RestoreAndHide();
+                return;
+            }
+            if (eventType == Native.EVENT_SYSTEM_MINIMIZEEND)
+            {
+                _lastInsetCalib = DateTime.MinValue;
+                _lastRawW = 0;
+                _lastRawH = 0;
+                SyncGeometry(true);
+                return;
+            }
             if (eventType == Native.EVENT_SYSTEM_MOVESIZESTART)
             {
                 StartDragBoost();
@@ -1129,7 +1191,10 @@ namespace WallpaperStudioCompanion
                 SyncGeometry(false);
                 return;
             }
-            SyncGeometry(false);
+            if (!_alreadyHidden)
+            {
+                SyncGeometry(false);
+            }
         }
 
         private static void StartUiaDocWatcher()
@@ -1447,6 +1512,9 @@ namespace WallpaperStudioCompanion
 
         private static void RestoreAndHide()
         {
+            if (_alreadyHidden) return;
+            _alreadyHidden = true;
+
             try
             {
                 if (_trackedAgy != IntPtr.Zero)
@@ -1495,7 +1563,7 @@ namespace WallpaperStudioCompanion
                     _trackedAgy == IntPtr.Zero ||
                     !Native.IsWindow(_trackedAgy) ||
                     !Native.IsWindowVisible(_trackedAgy) ||
-                    (DateTime.UtcNow - _lastWindowDiscovery).TotalMilliseconds >= 450;
+                    (DateTime.UtcNow - _lastWindowDiscovery).TotalMilliseconds >= (_alreadyHidden ? 500 : 800);
 
                 if (needDiscover)
                 {
@@ -1518,6 +1586,7 @@ namespace WallpaperStudioCompanion
                 RestoreAndHide();
                 return;
             }
+            _alreadyHidden = false;
 
             // Detect Antigravity window title changes when not dragging
             if (!_isMovingOrSizing && !string.IsNullOrEmpty(_activeWinPath) && (DateTime.UtcNow - _lastTitlePoll).TotalMilliseconds >= 80)
