@@ -38,8 +38,10 @@ const DEFAULT_CONFIG = {
   rotationEnabled: false,
   rotationIntervalMin: 15,
   rotationOrder: 'random', // 'random' | 'sequential'
-  rotationSource: 'dsh_fav', // 'all' | 'video' | 'scene' | 'web' | 'dsh_fav' | 'custom'
+  rotationSource: 'dsh_fav', // 'all' | 'video' | 'scene' | 'web' | 'dsh_fav' | 'custom' | 'group'
   rotationCustomIds: [],
+  rotationGroups: [],
+  activeGroupId: '',
   // Context & HUD settings
   contextLimit: 512000,
   pinnedConvId: '',
@@ -72,9 +74,36 @@ function sanitizeHex(val, fallback) {
   return /^#[0-9a-fA-F]{6}$/.test(s) ? s : fallback;
 }
 
+function sanitizeRotationGroups(rawGroups) {
+  if (!Array.isArray(rawGroups)) return [];
+  const out = [];
+  const seenIds = new Set();
+  for (let i = 0; i < rawGroups.length; i++) {
+    const g = rawGroups[i];
+    if (!g || typeof g !== 'object') continue;
+    let id = typeof g.id === 'string' ? g.id.trim() : '';
+    if (!id || seenIds.has(id)) id = `grp-${i + 1}-${Date.now().toString(36)}`;
+    seenIds.add(id);
+    const rawName = typeof g.name === 'string' ? g.name.trim() : '';
+    const name = (rawName || `排表 ${out.length + 1}`).slice(0, 40);
+    const intervalMin = clamp(g.intervalMin ?? g.interval, 1, 240, 15);
+    const order = g.order === 'sequential' ? 'sequential' : 'random';
+    const wallpaperIds = Array.isArray(g.wallpaperIds)
+      ? [...new Set(g.wallpaperIds.map(String).filter(Boolean))]
+      : [];
+    out.push({ id, name, intervalMin, order, wallpaperIds });
+  }
+  return out;
+}
+
 function sanitizeConfig(raw) {
   const src = raw && typeof raw === 'object' ? raw : {};
-  const validSources = new Set(['all', 'video', 'scene', 'web', 'dsh_fav', 'custom']);
+  const validSources = new Set(['all', 'video', 'scene', 'web', 'dsh_fav', 'custom', 'group']);
+  const rotationGroups = sanitizeRotationGroups(src.rotationGroups);
+  const rawActiveGrp = typeof src.activeGroupId === 'string' ? src.activeGroupId.trim() : '';
+  const activeGroupId = rotationGroups.some((g) => g.id === rawActiveGrp)
+    ? rawActiveGrp
+    : rotationGroups[0]?.id || '';
   return {
     backdropEnabled:
       typeof src.backdropEnabled === 'boolean'
@@ -111,6 +140,8 @@ function sanitizeConfig(raw) {
     rotationCustomIds: Array.isArray(src.rotationCustomIds)
       ? [...new Set(src.rotationCustomIds.map(String).filter(Boolean))]
       : DEFAULT_CONFIG.rotationCustomIds,
+    rotationGroups,
+    activeGroupId,
     contextLimit: [256000, 512000, 1000000].includes(Number(src.contextLimit))
       ? Number(src.contextLimit)
       : DEFAULT_CONFIG.contextLimit,
@@ -155,16 +186,69 @@ function loadConfig() {
   const hints = readDshWeHints();
   if (existsSync(CONFIG_PATH)) {
     try {
-      const loaded = sanitizeConfig(JSON.parse(readFileSync(CONFIG_PATH, 'utf8')));
+      let loaded = sanitizeConfig(JSON.parse(readFileSync(CONFIG_PATH, 'utf8')));
+      let dirty = false;
       if (loaded.rotationCustomIds.length === 0 && hints.favoriteIds.length > 0) {
         loaded.rotationCustomIds = hints.favoriteIds.slice();
+        dirty = true;
       }
+      if (loaded.rotationGroups.length === 0) {
+        let seededGroups = [];
+        if (loaded.rotationCustomIds.length > 0) {
+          seededGroups = [
+            {
+              id: 'grp-default',
+              name: '默认排表',
+              intervalMin: loaded.rotationIntervalMin,
+              order: loaded.rotationOrder,
+              wallpaperIds: loaded.rotationCustomIds.slice(),
+            },
+          ];
+        } else if (Array.isArray(hints.rotationGroups) && hints.rotationGroups.length > 0) {
+          seededGroups = hints.rotationGroups.map((g) => ({
+            id: g.id,
+            name: g.name,
+            intervalMin: Number(g.interval) || 15,
+            order: g.order,
+            wallpaperIds: g.wallpaperIds,
+          }));
+        }
+        if (seededGroups.length > 0) {
+          loaded = sanitizeConfig({
+            ...loaded,
+            rotationGroups: seededGroups,
+            activeGroupId: seededGroups[0].id,
+          });
+          dirty = true;
+        }
+      }
+      if (dirty) saveConfig(loaded);
       return loaded;
     } catch {
       // fall through
     }
   }
   const firstGroup = hints.rotationGroups?.[0];
+  let initialGroups = [];
+  if (Array.isArray(hints.rotationGroups) && hints.rotationGroups.length > 0) {
+    initialGroups = hints.rotationGroups.map((g) => ({
+      id: g.id,
+      name: g.name,
+      intervalMin: Number(g.interval) || 15,
+      order: g.order,
+      wallpaperIds: g.wallpaperIds,
+    }));
+  } else if (hints.favoriteIds.length > 0) {
+    initialGroups = [
+      {
+        id: 'grp-default',
+        name: '默认排表',
+        intervalMin: 30,
+        order: 'random',
+        wallpaperIds: hints.favoriteIds.slice(),
+      },
+    ];
+  }
   const initial = sanitizeConfig({
     ...DEFAULT_CONFIG,
     wallpaperId: hints.activeId || '',
@@ -175,6 +259,8 @@ function loadConfig() {
     rotationOrder: firstGroup?.order || 'random',
     rotationSource: hints.favoriteIds.length >= 2 ? 'dsh_fav' : 'all',
     rotationCustomIds: hints.favoriteIds.slice(),
+    rotationGroups: initialGroups,
+    activeGroupId: initialGroups[0]?.id || '',
   });
   saveConfig(initial);
   return initial;
@@ -206,6 +292,11 @@ function findActiveWallpaper() {
   return libraryCache.items.find((it) => it.id === config.wallpaperId) || libraryCache.items[0];
 }
 
+function getActiveGroup() {
+  if (!Array.isArray(config.rotationGroups) || !config.rotationGroups.length) return null;
+  return config.rotationGroups.find((g) => g.id === config.activeGroupId) || config.rotationGroups[0] || null;
+}
+
 function getRotationPool() {
   if (!libraryCache || !libraryCache.items.length) return [];
   const items = libraryCache.items.filter((it) => it.renderMode !== 'none');
@@ -220,6 +311,14 @@ function getRotationPool() {
     const set = new Set(config.rotationCustomIds);
     const picked = items.filter((it) => set.has(it.id));
     return picked.length >= 2 ? picked : items;
+  }
+  if (config.rotationSource === 'group') {
+    const grp = getActiveGroup();
+    if (grp) {
+      const byId = new Map(items.map((it) => [it.id, it]));
+      const picked = grp.wallpaperIds.map((id) => byId.get(id)).filter(Boolean);
+      return picked.length >= 1 ? picked : items;
+    }
   }
   return items;
 }
@@ -239,6 +338,7 @@ function pickNextWallpaper() {
 
 function getRotationStatus() {
   const pool = getRotationPool();
+  const grp = getActiveGroup();
   const intervalMs = config.rotationIntervalMin * 60 * 1000;
   const nextAt = config.rotationEnabled ? lastRotationAt + intervalMs : 0;
   const remainingSec = config.rotationEnabled
@@ -250,6 +350,8 @@ function getRotationStatus() {
     intervalMin: config.rotationIntervalMin,
     order: config.rotationOrder,
     source: config.rotationSource,
+    activeGroupId: grp ? grp.id : '',
+    activeGroupName: grp ? grp.name : '',
     remainingSec,
     nextAt,
   };
@@ -409,6 +511,13 @@ app.api(
     const force = String(data?.force || '') === '1';
     const lib = await ensureLibrary(force);
     const customSet = new Set(config.rotationCustomIds);
+    const wpGroupsMap = new Map();
+    for (const grp of config.rotationGroups || []) {
+      for (const wpId of grp.wallpaperIds || []) {
+        if (!wpGroupsMap.has(wpId)) wpGroupsMap.set(wpId, []);
+        wpGroupsMap.get(wpId).push(grp.id);
+      }
+    }
     return {
       counts: lib.counts,
       scannedRoots: lib.scannedRoots,
@@ -424,6 +533,7 @@ app.api(
         isDshFavorite: it.isDshFavorite,
         isDshActive: it.isDshActive,
         inCustomPool: customSet.has(it.id),
+        groupIds: wpGroupsMap.get(it.id) || [],
         hasPreview: Boolean(it.previewPath),
       })),
     };
@@ -473,13 +583,37 @@ app.api('/api/config', async (data) => {
   const prevInterval = config.rotationIntervalMin;
   const prevEnabled = config.rotationEnabled;
   const prevWp = config.wallpaperId;
-  config = sanitizeConfig({ ...config, ...(data || {}) });
+  const prevGroupId = config.activeGroupId;
+  const patch = data || {};
+  let nextCfg = sanitizeConfig({ ...config, ...patch });
+
+  if (nextCfg.rotationSource === 'group' && nextCfg.activeGroupId) {
+    const grpIdx = nextCfg.rotationGroups.findIndex((g) => g.id === nextCfg.activeGroupId);
+    if (grpIdx >= 0) {
+      const grp = nextCfg.rotationGroups[grpIdx];
+      if (patch.activeGroupId !== undefined && patch.activeGroupId !== prevGroupId) {
+        if (patch.rotationIntervalMin === undefined) nextCfg.rotationIntervalMin = grp.intervalMin;
+        if (patch.rotationOrder === undefined) nextCfg.rotationOrder = grp.order;
+      } else if (patch.rotationIntervalMin !== undefined || patch.rotationOrder !== undefined) {
+        const updatedGroups = nextCfg.rotationGroups.slice();
+        updatedGroups[grpIdx] = {
+          ...grp,
+          intervalMin: nextCfg.rotationIntervalMin,
+          order: nextCfg.rotationOrder,
+        };
+        nextCfg = sanitizeConfig({ ...nextCfg, rotationGroups: updatedGroups });
+      }
+    }
+  }
+
+  config = nextCfg;
   saveConfig(config);
 
   if (
     config.rotationEnabled !== prevEnabled ||
     config.rotationIntervalMin !== prevInterval ||
-    config.wallpaperId !== prevWp
+    config.wallpaperId !== prevWp ||
+    config.activeGroupId !== prevGroupId
   ) {
     lastRotationAt = Date.now();
   }
@@ -546,6 +680,203 @@ app.api('/api/rotation/toggle-item', async (data) => {
     ok: true,
     inCustomPool: set.has(id),
     rotationCustomIds: config.rotationCustomIds,
+    rotation: getRotationStatus(),
+  };
+});
+
+function serializeActiveWp(activeWp) {
+  return activeWp
+    ? {
+        id: activeWp.id,
+        title: activeWp.title,
+        type: activeWp.type,
+        renderMode: activeWp.renderMode,
+        schemeColor: activeWp.schemeColor,
+        hasPreview: Boolean(activeWp.previewPath),
+      }
+    : null;
+}
+
+app.api('/api/groups/create', async (data) => {
+  const name = typeof data?.name === 'string' ? data.name.trim().slice(0, 40) : '';
+  if (!name) throw new Error('Missing group name');
+  const id = `grp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const intervalMin = clamp(data?.intervalMin, 1, 240, config.rotationIntervalMin || 15);
+  const order = data?.order === 'sequential' ? 'sequential' : 'random';
+  const wallpaperIds = Array.isArray(data?.wallpaperIds)
+    ? [...new Set(data.wallpaperIds.map(String).filter(Boolean))]
+    : [];
+  const nextGroup = { id, name, intervalMin, order, wallpaperIds };
+  const rotationGroups = [...config.rotationGroups, nextGroup];
+
+  let nextWallpaperId = config.wallpaperId;
+  let nextBackdrop = config.backdropEnabled;
+  const activate = data?.activate === true;
+  if (activate && wallpaperIds.length > 0 && !wallpaperIds.includes(nextWallpaperId)) {
+    nextWallpaperId = order === 'sequential'
+      ? wallpaperIds[0]
+      : wallpaperIds[Math.floor(Math.random() * wallpaperIds.length)];
+    nextBackdrop = true;
+  }
+
+  config = sanitizeConfig({
+    ...config,
+    rotationGroups,
+    activeGroupId: activate || !config.activeGroupId ? id : config.activeGroupId,
+    ...(activate
+      ? {
+          rotationSource: 'group',
+          rotationIntervalMin: intervalMin,
+          rotationOrder: order,
+          wallpaperId: nextWallpaperId,
+          backdropEnabled: nextBackdrop,
+        }
+      : {}),
+  });
+  saveConfig(config);
+  if (activate) lastRotationAt = Date.now();
+  const { telemetry, companion } = await refreshAndSyncCompanion();
+  return {
+    ok: true,
+    group: config.rotationGroups.find((g) => g.id === id) || nextGroup,
+    config,
+    telemetry,
+    companion,
+    rotation: getRotationStatus(),
+    activeWallpaper: serializeActiveWp(findActiveWallpaper()),
+  };
+});
+
+app.api('/api/groups/update', async (data) => {
+  const id = typeof data?.id === 'string' ? data.id.trim() : '';
+  const idx = config.rotationGroups.findIndex((g) => g.id === id);
+  if (idx < 0) throw new Error('Group not found');
+  const cur = config.rotationGroups[idx];
+  const updated = {
+    ...cur,
+    ...(typeof data?.name === 'string' && data.name.trim() ? { name: data.name.trim().slice(0, 40) } : {}),
+    ...(data?.intervalMin !== undefined ? { intervalMin: clamp(data.intervalMin, 1, 240, cur.intervalMin) } : {}),
+    ...(data?.order !== undefined ? { order: data.order === 'sequential' ? 'sequential' : 'random' } : {}),
+    ...(Array.isArray(data?.wallpaperIds)
+      ? { wallpaperIds: [...new Set(data.wallpaperIds.map(String).filter(Boolean))] }
+      : {}),
+  };
+  const rotationGroups = config.rotationGroups.slice();
+  rotationGroups[idx] = updated;
+  const isActive = config.rotationSource === 'group' && config.activeGroupId === id;
+  const intervalChanged = isActive && updated.intervalMin !== config.rotationIntervalMin;
+  config = sanitizeConfig({
+    ...config,
+    rotationGroups,
+    ...(isActive ? { rotationIntervalMin: updated.intervalMin, rotationOrder: updated.order } : {}),
+  });
+  saveConfig(config);
+  if (intervalChanged) lastRotationAt = Date.now();
+  const { telemetry, companion } = await refreshAndSyncCompanion();
+  return {
+    ok: true,
+    group: config.rotationGroups[idx],
+    config,
+    telemetry,
+    companion,
+    rotation: getRotationStatus(),
+  };
+});
+
+app.api('/api/groups/delete', async (data) => {
+  const id = typeof data?.id === 'string' ? data.id.trim() : '';
+  const rotationGroups = config.rotationGroups.filter((g) => g.id !== id);
+  if (rotationGroups.length === config.rotationGroups.length) {
+    throw new Error('Group not found');
+  }
+  const nextActiveId =
+    config.activeGroupId === id ? rotationGroups[0]?.id || '' : config.activeGroupId;
+  const nextSource =
+    config.rotationSource === 'group' && rotationGroups.length === 0 ? 'custom' : config.rotationSource;
+  const nextGrp = rotationGroups.find((g) => g.id === nextActiveId) || null;
+  config = sanitizeConfig({
+    ...config,
+    rotationGroups,
+    activeGroupId: nextActiveId,
+    rotationSource: nextSource,
+    ...(nextSource === 'group' && nextGrp
+      ? { rotationIntervalMin: nextGrp.intervalMin, rotationOrder: nextGrp.order }
+      : {}),
+  });
+  saveConfig(config);
+  lastRotationAt = Date.now();
+  const { telemetry, companion } = await refreshAndSyncCompanion();
+  return {
+    ok: true,
+    config,
+    telemetry,
+    companion,
+    rotation: getRotationStatus(),
+  };
+});
+
+app.api('/api/groups/activate', async (data) => {
+  const id = typeof data?.id === 'string' ? data.id.trim() : '';
+  const grp = config.rotationGroups.find((g) => g.id === id);
+  if (!grp) throw new Error('Group not found');
+  await ensureLibrary(false);
+  const availIds = new Set(
+    (libraryCache?.items || []).filter((it) => it.renderMode !== 'none').map((it) => it.id),
+  );
+  const validIds = grp.wallpaperIds.filter((wpId) => availIds.size === 0 || availIds.has(wpId));
+  let nextWp = config.wallpaperId;
+  let nextBackdrop = config.backdropEnabled;
+  const switchNow = data?.switchNow !== false;
+  if (switchNow && validIds.length > 0 && !validIds.includes(config.wallpaperId)) {
+    nextWp = grp.order === 'sequential'
+      ? validIds[0]
+      : validIds[Math.floor(Math.random() * validIds.length)];
+    nextBackdrop = true;
+  }
+  config = sanitizeConfig({
+    ...config,
+    rotationSource: 'group',
+    activeGroupId: grp.id,
+    rotationIntervalMin: grp.intervalMin,
+    rotationOrder: grp.order,
+    ...(data?.enableRotation === true ? { rotationEnabled: true } : {}),
+    wallpaperId: nextWp,
+    backdropEnabled: nextBackdrop,
+  });
+  saveConfig(config);
+  lastRotationAt = Date.now();
+  const { telemetry, companion } = await refreshAndSyncCompanion();
+  return {
+    ok: true,
+    config,
+    telemetry,
+    companion,
+    rotation: getRotationStatus(),
+    activeWallpaper: serializeActiveWp(findActiveWallpaper()),
+  };
+});
+
+app.api('/api/groups/toggle-item', async (data) => {
+  const wallpaperId = typeof data?.wallpaperId === 'string' ? data.wallpaperId.trim() : '';
+  if (!wallpaperId) throw new Error('Missing wallpaper id');
+  const reqGroupId = typeof data?.groupId === 'string' ? data.groupId.trim() : '';
+  const targetId = reqGroupId || config.activeGroupId || config.rotationGroups[0]?.id || '';
+  const idx = config.rotationGroups.findIndex((g) => g.id === targetId);
+  if (idx < 0) throw new Error('Group not found');
+  const cur = config.rotationGroups[idx];
+  const exists = cur.wallpaperIds.includes(wallpaperId);
+  const nextIds = exists
+    ? cur.wallpaperIds.filter((x) => x !== wallpaperId)
+    : [...cur.wallpaperIds, wallpaperId];
+  const rotationGroups = config.rotationGroups.slice();
+  rotationGroups[idx] = { ...cur, wallpaperIds: nextIds };
+  config = sanitizeConfig({ ...config, rotationGroups });
+  saveConfig(config);
+  return {
+    ok: true,
+    inGroup: !exists,
+    group: config.rotationGroups[idx],
+    config,
     rotation: getRotationStatus(),
   };
 });

@@ -472,6 +472,125 @@
       text-overflow: ellipsis;
     }
 
+    .group-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 5px;
+    }
+    .group-bar-label {
+      font-size: 11px;
+      color: var(--muted-fg);
+      margin-right: 2px;
+      white-space: nowrap;
+    }
+    .group-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3.5px 9px;
+      border-radius: 999px;
+      border: 1px solid var(--border-col);
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--fg-base);
+      font-size: 11px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.14s ease;
+      max-width: 170px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .group-pill:hover { border-color: var(--accent); }
+    .group-pill.active {
+      background: color-mix(in srgb, var(--accent) 24%, transparent);
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+    .group-pill.editing:not(.active) {
+      border-style: dashed;
+      border-color: color-mix(in srgb, var(--accent) 65%, #fff);
+    }
+    .group-inline-form {
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px;
+      border-radius: 8px;
+      border: 1px solid var(--border-col);
+      background: rgba(16, 22, 34, 0.86);
+    }
+    .group-inline-form.open { display: flex; }
+    .group-form-row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .group-list {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      margin-top: 6px;
+    }
+    .group-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 5px 7px;
+      border-radius: 7px;
+      border: 1px solid var(--border-col);
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .group-row.active {
+      border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 14%, transparent);
+    }
+    .group-row-main {
+      flex: 1;
+      min-width: 0;
+      cursor: pointer;
+    }
+    .group-row-name {
+      font-size: 11.5px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .group-row-meta {
+      font-size: 10px;
+      color: var(--muted-fg);
+    }
+    .group-row-actions {
+      display: flex;
+      gap: 3px;
+      flex-shrink: 0;
+    }
+    .mini-btn.danger:hover, .mini-btn.danger.confirming {
+      border-color: var(--danger);
+      color: #fca5a5;
+      background: rgba(239, 68, 68, 0.16);
+    }
+    .wp-group-badge {
+      position: absolute;
+      right: 5px;
+      bottom: 30px;
+      max-width: 82px;
+      padding: 1.5px 5px;
+      border-radius: 4px;
+      font-size: 9.5px;
+      background: rgba(10, 14, 24, 0.82);
+      color: #e2e8f0;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      pointer-events: none;
+    }
+
     .rot-banner {
       font-size: 11px;
       color: var(--muted-fg);
@@ -617,7 +736,7 @@
 
         <!-- Section 2: Auto Rotation -->
         <details class="sec" open>
-          <summary>🔀 壁纸随机轮播</summary>
+          <summary>🔀 壁纸轮播与排表分组</summary>
           <div class="sec-body">
             <div class="ctrl-inline">
               <span>开启自动轮播</span>
@@ -637,6 +756,7 @@
             <div class="ctrl-inline">
               <span>轮播范围</span>
               <select class="select" id="selRotSource" style="width:118px">
+                <option value="group">指定排表分组</option>
                 <option value="all">全部壁纸</option>
                 <option value="dsh_fav">DSH 收藏池</option>
                 <option value="custom">自定义勾选池</option>
@@ -658,6 +778,13 @@
                 <button class="mini-btn" data-min="60">60m</button>
               </div>
               <input class="input" id="numRotMin" type="number" min="1" max="240" style="margin-top:6px" placeholder="自定义分钟数 (1-240)" />
+            </div>
+            <div class="ctrl">
+              <div class="ctrl-head">
+                <span>排表分组管理</span>
+                <button class="mini-btn" id="btnSideNewGroup">+ 新建分组</button>
+              </div>
+              <div class="group-list" id="groupManageList"></div>
             </div>
           </div>
         </details>
@@ -748,13 +875,36 @@
             <input class="input" id="searchInput" type="text" placeholder="搜索 Wallpaper Engine 壁纸（Video / 3D Scene / Web）..." />
             <button class="mini-btn" id="btnRescan">重扫</button>
           </div>
+          <div class="group-bar" id="groupQuickBar"></div>
+          <div class="group-inline-form" id="groupCreateBox">
+            <div class="group-form-row">
+              <input class="input" id="inpNewGroupName" type="text" maxlength="40" placeholder="新排表分组名称（如：工作低噪 / 炫酷场景）" style="flex:1;min-width:140px" />
+              <input class="input" id="inpNewGroupMin" type="number" min="1" max="240" value="15" title="轮播间隔(分钟)" style="width:64px" />
+              <select class="select" id="selNewGroupOrder" style="width:88px">
+                <option value="random">随机</option>
+                <option value="sequential">顺序</option>
+              </select>
+            </div>
+            <div class="group-form-row">
+              <select class="select" id="selNewGroupSeed" style="flex:1;min-width:140px">
+                <option value="empty">从空白分组开始（稍后勾选）</option>
+                <option value="active_group">复制当前排表分组壁纸</option>
+                <option value="custom">复制自定义轮播池壁纸</option>
+                <option value="filtered">导入当前筛选列表壁纸</option>
+              </select>
+              <button class="mini-btn active" id="btnCreateGroupSave">创建并启用</button>
+              <button class="mini-btn" id="btnCreateGroupCancel">取消</button>
+            </div>
+          </div>
           <div class="filter-row" id="filterRow">
             <button class="chip active" data-filter="all">全部 <span id="cntAll"></span></button>
             <button class="chip" data-filter="video">视频 <span id="cntVideo"></span></button>
             <button class="chip" data-filter="scene">3D 场景 <span id="cntScene"></span></button>
             <button class="chip" data-filter="web">网页 <span id="cntWeb"></span></button>
             <button class="chip" data-filter="fav">DSH 收藏</button>
+            <button class="chip" data-filter="group">当前分组 <span id="cntGroup"></span></button>
             <button class="chip" data-filter="custom">轮播池 <span id="cntCustom"></span></button>
+            <select class="select" id="selEditGroup" title="右上角 +/✓ 按钮默认勾选进哪个分组" style="width:auto;max-width:130px;height:24px;font-size:10.5px;margin-left:auto"></select>
           </div>
         </div>
 
@@ -789,6 +939,40 @@
     let liveInflight = false;
     let pendingLivePatch = null;
     let lastLiveSentAt = 0;
+    let editingGroupId = '';
+    let renamingGroupId = '';
+    let confirmDeleteGroupId = '';
+    let confirmDeleteTimer = null;
+    let lastEditGroupSig = '';
+
+    function escapeHtml(raw) {
+      return String(raw || '').replace(/[<>&"]/g, (c) => ({
+        '<': '&lt;',
+        '>': '&gt;',
+        '&': '&amp;',
+        '"': '&quot;',
+      }[c]));
+    }
+
+    function getGroups() {
+      return Array.isArray(state?.config?.rotationGroups) ? state.config.rotationGroups : [];
+    }
+
+    function getActiveGroup() {
+      const groups = getGroups();
+      const aid = state?.config?.activeGroupId || '';
+      return groups.find((g) => g.id === aid) || groups[0] || null;
+    }
+
+    function getEditingGroup() {
+      const groups = getGroups();
+      if (!groups.length) return null;
+      const found = groups.find((g) => g.id === editingGroupId);
+      if (found) return found;
+      const active = getActiveGroup();
+      editingGroupId = active ? active.id : groups[0].id;
+      return active || groups[0];
+    }
 
     function flushLiveQueue() {
       if (liveInflight || !pendingLivePatch) return;
@@ -901,8 +1085,13 @@
       document.getElementById('heroCache').textContent = `${active.cacheHitRate || 0}%`;
 
       if (rotation && rotation.enabled) {
-        document.getElementById('heroRotInfo').innerHTML =
-          `轮播 <strong>${fmtCountdown(rotation.remainingSec)}</strong>`;
+        if (rotation.source === 'group' && rotation.activeGroupName) {
+          document.getElementById('heroRotInfo').innerHTML =
+            `排表「${escapeHtml(rotation.activeGroupName)}」 <strong>${fmtCountdown(rotation.remainingSec)}</strong>`;
+        } else {
+          document.getElementById('heroRotInfo').innerHTML =
+            `轮播 <strong>${fmtCountdown(rotation.remainingSec)}</strong>`;
+        }
       } else {
         document.getElementById('heroRotInfo').textContent = active.model || '';
       }
@@ -925,7 +1114,10 @@
       document.getElementById('cntVideo').textContent = c.video ? `(${c.video})` : '';
       document.getElementById('cntScene').textContent = c.scene ? `(${c.scene})` : '';
       document.getElementById('cntWeb').textContent = c.web ? `(${c.web})` : '';
+      const editGrp = getEditingGroup();
+      document.getElementById('cntGroup').textContent = editGrp ? `(${editGrp.wallpaperIds.length})` : '';
       document.getElementById('cntCustom').textContent = `(${(config.rotationCustomIds || []).length})`;
+      renderGroupControls();
 
       // Sidebar controls (never yank slider thumbs while user is actively dragging)
       if (Date.now() > activeDragUntil) {
@@ -995,24 +1187,214 @@
       }
     }
 
-    function renderLibrary() {
-      const q = (document.getElementById('searchInput').value || '').trim().toLowerCase();
-      const grid = document.getElementById('wpGrid');
-      const activeId = state?.config?.wallpaperId || '';
-      const customSet = new Set(state?.config?.rotationCustomIds || []);
+    function applyServerPayload(res) {
+      if (!res || !state) return;
+      if (res.config) state.config = res.config;
+      if (res.telemetry) state.telemetry = res.telemetry;
+      if (res.companion) state.companion = res.companion;
+      if (res.rotation) state.rotation = res.rotation;
+      if (res.activeWallpaper !== undefined && res.activeWallpaper !== null) {
+        state.activeWallpaper = res.activeWallpaper;
+      }
+      renderState();
+      renderLibrary();
+    }
 
-      const filtered = library.filter((it) => {
+    async function activateGroup(groupId, enableRotation = false) {
+      editingGroupId = groupId;
+      const res = await api.post('/api/groups/activate', {
+        id: groupId,
+        enableRotation,
+        switchNow: true,
+      });
+      applyServerPayload(res);
+    }
+
+    function renderGroupControls() {
+      const groups = getGroups();
+      const editGrp = getEditingGroup();
+      const isGroupRot = state?.config?.rotationSource === 'group';
+      const activeId = state?.config?.activeGroupId || '';
+
+      const quickBar = document.getElementById('groupQuickBar');
+      const pills = groups.map((g) => {
+        const isActive = isGroupRot && g.id === activeId;
+        const isEditing = editGrp && g.id === editGrp.id;
+        const cls = `group-pill${isActive ? ' active' : ''}${isEditing ? ' editing' : ''}`;
+        const orderLabel = g.order === 'sequential' ? '顺序' : '随机';
+        return `<button class="${cls}" data-grp-id="${escapeHtml(g.id)}" title="${g.intervalMin}分钟 · ${orderLabel} · 点击立即切换到此排表分组">${isActive ? '▶ ' : ''}${escapeHtml(g.name)} (${g.wallpaperIds.length})</button>`;
+      });
+      quickBar.innerHTML =
+        `<span class="group-bar-label">排表:</span>` +
+        (pills.length ? pills.join('') : `<span class="group-bar-label">暂无分组</span>`) +
+        `<button class="mini-btn" id="btnBarNewGroup" title="新建壁纸排表分组">+ 新建</button>`;
+
+      quickBar.querySelectorAll('.group-pill').forEach((btn) => {
+        btn.addEventListener('click', () => activateGroup(btn.dataset.grpId));
+      });
+      document.getElementById('btnBarNewGroup').addEventListener('click', () => {
+        const box = document.getElementById('groupCreateBox');
+        box.classList.toggle('open');
+        if (box.classList.contains('open')) {
+          document.getElementById('inpNewGroupName').focus();
+        }
+      });
+
+      const selEdit = document.getElementById('selEditGroup');
+      const sig = `${groups.map((g) => `${g.id}:${g.name}:${g.wallpaperIds.length}`).join('|')}@${editGrp?.id || ''}`;
+      if (sig !== lastEditGroupSig) {
+        lastEditGroupSig = sig;
+        if (groups.length) {
+          selEdit.style.display = '';
+          selEdit.innerHTML = groups
+            .map((g) => `<option value="${escapeHtml(g.id)}">勾选入组: ${escapeHtml(g.name)}</option>`)
+            .join('');
+          selEdit.value = editGrp ? editGrp.id : groups[0].id;
+        } else {
+          selEdit.style.display = 'none';
+          selEdit.innerHTML = '';
+        }
+      }
+
+      const listEl = document.getElementById('groupManageList');
+      if (renamingGroupId && listEl.querySelector('#inpRenameGroup')) {
+        return;
+      }
+      if (!groups.length) {
+        listEl.innerHTML = `<div style="font-size:11px;color:var(--muted-fg);padding:4px 2px">点击「+ 新建分组」创建不同场景的壁纸轮播排表</div>`;
+        return;
+      }
+      listEl.innerHTML = groups
+        .map((g) => {
+          const isActive = isGroupRot && g.id === activeId;
+          const ordTxt = g.order === 'sequential' ? '顺序' : '随机';
+          if (renamingGroupId === g.id) {
+            return `
+              <div class="group-row${isActive ? ' active' : ''}" data-gid="${escapeHtml(g.id)}">
+                <input class="input" id="inpRenameGroup" type="text" maxlength="40" value="${escapeHtml(g.name)}" style="height:24px;flex:1;min-width:80px" />
+                <div class="group-row-actions">
+                  <button class="mini-btn active" data-act="save-rename" data-gid="${escapeHtml(g.id)}">保存</button>
+                  <button class="mini-btn" data-act="cancel-rename">取消</button>
+                </div>
+              </div>`;
+          }
+          const isConfirm = confirmDeleteGroupId === g.id;
+          return `
+            <div class="group-row${isActive ? ' active' : ''}" data-gid="${escapeHtml(g.id)}">
+              <div class="group-row-main" data-act="activate" data-gid="${escapeHtml(g.id)}" title="点击启用此排表分组">
+                <div class="group-row-name">${isActive ? '▶ ' : ''}${escapeHtml(g.name)}</div>
+                <div class="group-row-meta">${g.wallpaperIds.length} 张 · ${g.intervalMin}m · ${ordTxt}</div>
+              </div>
+              <div class="group-row-actions">
+                <button class="mini-btn" data-act="filter" data-gid="${escapeHtml(g.id)}" title="筛选并编辑此分组内的壁纸">筛选</button>
+                <button class="mini-btn" data-act="rename" data-gid="${escapeHtml(g.id)}" title="重命名此分组">改名</button>
+                <button class="mini-btn danger${isConfirm ? ' confirming' : ''}" data-act="delete" data-gid="${escapeHtml(g.id)}" title="删除此分组">${isConfirm ? '确认?' : '删'}</button>
+              </div>
+            </div>`;
+        })
+        .join('');
+
+      listEl.querySelectorAll('[data-act="activate"]').forEach((el) => {
+        el.addEventListener('click', () => activateGroup(el.dataset.gid));
+      });
+      listEl.querySelectorAll('[data-act="filter"]').forEach((el) => {
+        el.addEventListener('click', () => {
+          editingGroupId = el.dataset.gid;
+          currentFilter = 'group';
+          document.querySelectorAll('#filterRow .chip').forEach((c) => {
+            c.classList.toggle('active', c.dataset.filter === 'group');
+          });
+          renderState();
+          renderLibrary();
+        });
+      });
+      listEl.querySelectorAll('[data-act="rename"]').forEach((el) => {
+        el.addEventListener('click', () => {
+          renamingGroupId = el.dataset.gid;
+          renderGroupControls();
+          const inp = document.getElementById('inpRenameGroup');
+          if (inp) {
+            inp.focus();
+            inp.select();
+            inp.addEventListener('keydown', (ke) => {
+              if (ke.key === 'Enter') listEl.querySelector('[data-act="save-rename"]')?.click();
+              if (ke.key === 'Escape') {
+                renamingGroupId = '';
+                renderGroupControls();
+              }
+            });
+          }
+        });
+      });
+      listEl.querySelectorAll('[data-act="cancel-rename"]').forEach((el) => {
+        el.addEventListener('click', () => {
+          renamingGroupId = '';
+          renderGroupControls();
+        });
+      });
+      listEl.querySelectorAll('[data-act="save-rename"]').forEach((el) => {
+        el.addEventListener('click', async () => {
+          const inp = document.getElementById('inpRenameGroup');
+          const name = inp ? inp.value.trim() : '';
+          if (!name) return;
+          renamingGroupId = '';
+          const res = await api.post('/api/groups/update', { id: el.dataset.gid, name });
+          applyServerPayload(res);
+        });
+      });
+      listEl.querySelectorAll('[data-act="delete"]').forEach((el) => {
+        el.addEventListener('click', async () => {
+          const gid = el.dataset.gid;
+          if (confirmDeleteGroupId !== gid) {
+            confirmDeleteGroupId = gid;
+            clearTimeout(confirmDeleteTimer);
+            confirmDeleteTimer = setTimeout(() => {
+              confirmDeleteGroupId = '';
+              renderGroupControls();
+            }, 3000);
+            renderGroupControls();
+            return;
+          }
+          clearTimeout(confirmDeleteTimer);
+          confirmDeleteGroupId = '';
+          const res = await api.post('/api/groups/delete', { id: gid });
+          if (editingGroupId === gid) editingGroupId = '';
+          applyServerPayload(res);
+        });
+      });
+    }
+
+    function getFilteredItems() {
+      const q = (document.getElementById('searchInput').value || '').trim().toLowerCase();
+      const customSet = new Set(state?.config?.rotationCustomIds || []);
+      const editGrp = getEditingGroup();
+      const groupSet = new Set(editGrp ? editGrp.wallpaperIds : []);
+      return library.filter((it) => {
         if (currentFilter === 'video' && it.renderMode !== 'video') return false;
         if (currentFilter === 'scene' && it.renderMode !== 'scene') return false;
         if (currentFilter === 'web' && it.renderMode !== 'web') return false;
         if (currentFilter === 'fav' && !it.isDshFavorite && !it.isDshActive) return false;
         if (currentFilter === 'custom' && !customSet.has(it.id)) return false;
+        if (currentFilter === 'group' && !groupSet.has(it.id)) return false;
         if (q) {
           const hay = `${it.title} ${(it.tags || []).join(' ')} ${it.id}`.toLowerCase();
           if (!hay.includes(q)) return false;
         }
         return true;
       });
+    }
+
+    function renderLibrary() {
+      const grid = document.getElementById('wpGrid');
+      const activeId = state?.config?.wallpaperId || '';
+      const customSet = new Set(state?.config?.rotationCustomIds || []);
+      const groups = getGroups();
+      const groupNameById = new Map(groups.map((g) => [g.id, g.name]));
+      const editGrp = getEditingGroup();
+      const useGroupToggle = currentFilter !== 'custom' && Boolean(editGrp);
+      const targetSet = useGroupToggle ? new Set(editGrp.wallpaperIds) : customSet;
+
+      const filtered = getFilteredItems();
 
       if (!filtered.length) {
         grid.innerHTML =
@@ -1025,19 +1407,26 @@
           const selected = it.id === activeId ? ' selected' : '';
           const mode = it.renderMode || 'image';
           const badgeTxt = { video: 'VIDEO', scene: '3D SCENE', web: 'WEB', image: 'IMG' }[mode] || 'WP';
-          const inPool = customSet.has(it.id);
-          const safeTitle = String(it.title || it.id).replace(/[<>&"]/g, (c) => ({
-            '<': '&lt;',
-            '>': '&gt;',
-            '&': '&amp;',
-            '"': '&quot;',
-          }[c]));
+          const inPool = targetSet.has(it.id);
+          const toggleTitle = useGroupToggle
+            ? `${inPool ? '从分组' : '加入分组'}「${escapeHtml(editGrp.name)}」${inPool ? '移除' : ''}`
+            : inPool
+              ? '从自定义轮播池移除'
+              : '加入自定义轮播池';
+          const memberNames = groups
+            .filter((g) => g.wallpaperIds.includes(it.id))
+            .map((g) => g.name);
+          const groupBadgeHtml = memberNames.length
+            ? `<span class="wp-group-badge" title="所属排表: ${escapeHtml(memberNames.join(' / '))}">${memberNames.length === 1 ? escapeHtml(memberNames[0]) : `${memberNames.length} 组`}</span>`
+            : '';
+          const safeTitle = escapeHtml(it.title || it.id);
           const imgSrc = it.hasPreview ? `/api/preview?id=${encodeURIComponent(it.id)}` : '';
           return `
             <div class="wp-card${selected}" data-id="${it.id}">
               <img class="wp-thumb" loading="lazy" src="${imgSrc}" alt="${safeTitle}" />
               <span class="wp-badge ${mode}">${badgeTxt}</span>
-              <button class="pool-toggle${inPool ? ' in-pool' : ''}" data-pool-id="${it.id}" title="${inPool ? '从自定义轮播池移除' : '加入自定义轮播池'}">${inPool ? '✓' : '+'}</button>
+              <button class="pool-toggle${inPool ? ' in-pool' : ''}" data-pool-id="${it.id}" title="${toggleTitle}">${inPool ? '✓' : '+'}</button>
+              ${groupBadgeHtml}
               <div class="wp-name" title="${safeTitle}">${safeTitle}</div>
             </div>
           `;
@@ -1055,12 +1444,22 @@
         btn.addEventListener('click', async (e) => {
           e.stopPropagation();
           const id = btn.dataset.poolId;
-          const res = await api.post('/api/rotation/toggle-item', { id });
-          if (res && res.ok && state) {
-            state.config.rotationCustomIds = res.rotationCustomIds;
-            state.rotation = res.rotation;
-            renderState();
-            renderLibrary();
+          if (useGroupToggle && editGrp) {
+            const res = await api.post('/api/groups/toggle-item', {
+              groupId: editGrp.id,
+              wallpaperId: id,
+            });
+            if (res && res.ok && state) {
+              applyServerPayload(res);
+            }
+          } else {
+            const res = await api.post('/api/rotation/toggle-item', { id });
+            if (res && res.ok && state) {
+              state.config.rotationCustomIds = res.rotationCustomIds;
+              state.rotation = res.rotation;
+              renderState();
+              renderLibrary();
+            }
           }
         });
       });
@@ -1144,6 +1543,51 @@
         currentFilter = chip.dataset.filter;
         renderLibrary();
       });
+    });
+
+    // Group creation & editing target wiring
+    document.getElementById('selEditGroup').addEventListener('change', (e) => {
+      editingGroupId = e.target.value;
+      renderState();
+      renderLibrary();
+    });
+    document.getElementById('btnSideNewGroup').addEventListener('click', () => {
+      if (window.innerWidth < 620) {
+        sidebarOpen = false;
+        syncSidebarUi();
+      }
+      const box = document.getElementById('groupCreateBox');
+      box.classList.add('open');
+      document.getElementById('inpNewGroupName').focus();
+    });
+    document.getElementById('btnCreateGroupCancel').addEventListener('click', () => {
+      document.getElementById('groupCreateBox').classList.remove('open');
+    });
+    document.getElementById('btnCreateGroupSave').addEventListener('click', async () => {
+      const nameEl = document.getElementById('inpNewGroupName');
+      const name = (nameEl.value || '').trim() || `排表 ${getGroups().length + 1}`;
+      const intervalMin = Math.max(1, Math.min(240, Number(document.getElementById('inpNewGroupMin').value) || 15));
+      const order = document.getElementById('selNewGroupOrder').value === 'sequential' ? 'sequential' : 'random';
+      const seed = document.getElementById('selNewGroupSeed').value;
+      let wallpaperIds = [];
+      if (seed === 'active_group') {
+        wallpaperIds = (getActiveGroup()?.wallpaperIds || []).slice();
+      } else if (seed === 'custom') {
+        wallpaperIds = (state?.config?.rotationCustomIds || []).slice();
+      } else if (seed === 'filtered') {
+        wallpaperIds = getFilteredItems().map((it) => it.id);
+      }
+      const res = await api.post('/api/groups/create', {
+        name,
+        intervalMin,
+        order,
+        wallpaperIds,
+        activate: true,
+      });
+      nameEl.value = '';
+      document.getElementById('groupCreateBox').classList.remove('open');
+      if (res && res.group) editingGroupId = res.group.id;
+      applyServerPayload(res);
     });
 
     // Visual sliders: continuous 50Hz live streaming while dragging, persist on release

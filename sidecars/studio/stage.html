@@ -139,7 +139,13 @@
     if (window.chrome && window.chrome.webview) {
       window.chrome.webview.addEventListener('message', (ev) => {
         const msg = ev && ev.data;
-        if (!msg || msg.type !== 'docMask') return;
+        if (!msg) return;
+        if (msg.type === 'resyncViewport') {
+          try { window.dispatchEvent(new Event('resize')); } catch {}
+          syncViewportAndCanvas();
+          return;
+        }
+        if (msg.type !== 'docMask') return;
         if (!msg.show) {
           docMaskEl.classList.remove('visible');
           return;
@@ -172,6 +178,13 @@
     let activeIdx = -1; // index of currently visible slot
     let currentKey = '';
     let loadSeq = 0;
+    let pendingLoadState = null;
+    let sceneResyncRetries = 0;
+    let sceneResyncKey = '';
+
+    function isViewportReady() {
+      return window.innerWidth >= 120 && window.innerHeight >= 120;
+    }
 
     function clearSlot(slot) {
       if (slot.cleanupTimer) {
@@ -287,6 +300,7 @@
       const seq = ++loadSeq;
 
       if (!s.wallpaperId || !s.backdropEnabled) {
+        pendingLoadState = null;
         for (const sl of slots) {
           sl.el.classList.remove('under', 'front', 'shown');
           clearSlot(sl);
@@ -295,6 +309,14 @@
         return;
       }
 
+      if (!isViewportReady()) {
+        pendingLoadState = s;
+        currentKey = '';
+        return;
+      }
+      pendingLoadState = null;
+
+      const isColdStart = activeIdx === -1;
       const nextIdx = activeIdx === 0 ? 1 : 0;
       const slot = slots[nextIdx];
       slot.el.classList.remove('under', 'front', 'shown');
@@ -305,7 +327,7 @@
       const mode = s.renderMode || 'image';
 
       if (mode === 'video' && s.entryFile) {
-        // Prepare preview silently in case video takes > 900ms to decode first frame
+        // Prepare preview silently in case video takes longer to decode first frame
         const prevReady = preloadImg(slot.preview, previewUrl, 700);
         slot.vid.style.display = 'block';
         slot.vid.muted = s.videoMuted !== false;
@@ -318,8 +340,9 @@
           commitCrossfade(nextIdx, seq);
         };
 
+        const videoWaitMs = isColdStart ? 2400 : 1100;
         const videoReady = new Promise((resolve) => {
-          const t = setTimeout(() => resolve(false), 1100);
+          const t = setTimeout(() => resolve(false), videoWaitMs);
           slot.vid.onplaying = () => {
             clearTimeout(t);
             slot.preview.classList.remove('visible');
@@ -377,15 +400,16 @@
           if (seq !== loadSeq) return;
           slot.preview.classList.add('visible');
         }
-        // Start crossfading into preview immediately if scene takes > 450ms,
-        // so switching feels responsive and smooth with zero black flash.
+        // Start crossfading into preview if scene takes too long,
+        // giving cold-start scenes extra headroom so crisp WebGL loads without square thumbnail flash.
         let revealed = false;
+        const sceneEarlyMs = isColdStart ? 1500 : 450;
         const earlyTimer = setTimeout(() => {
           if (!revealed && seq === loadSeq) {
             revealed = true;
             commitCrossfade(nextIdx, seq);
           }
-        }, 450);
+        }, sceneEarlyMs);
 
         slot.wwgl.style.display = 'block';
         try {
@@ -443,6 +467,39 @@
     }
 
     let lastStageState = null;
+    function syncViewportAndCanvas() {
+      if (lastStageState) applyVisualParams(lastStageState);
+      if (pendingLoadState && isViewportReady()) {
+        const s = pendingLoadState;
+        pendingLoadState = null;
+        handleStageState(s);
+        return;
+      }
+      if (activeIdx >= 0 && isViewportReady() && lastStageState && lastStageState.renderMode === 'scene' && lastStageState.backdropEnabled) {
+        const slot = slots[activeIdx];
+        const cvs = slot && slot.wwgl ? slot.wwgl.querySelector('canvas') : null;
+        if (cvs && slot.wwgl.clientWidth >= 120 && slot.wwgl.clientHeight >= 120) {
+          const dpr = Math.min(window.devicePixelRatio || 1, 2);
+          const expW = Math.round(slot.wwgl.clientWidth * dpr);
+          const expH = Math.round(slot.wwgl.clientHeight * dpr);
+          const curAspect = cvs.height > 0 ? (cvs.width / cvs.height) : 1;
+          const expAspect = expH > 0 ? (expW / expH) : 1;
+          const tooSmall = cvs.width < expW * 0.65 || cvs.height < expH * 0.65;
+          const badAspect = Math.abs(curAspect - expAspect) > 0.25;
+          if (tooSmall || badAspect) {
+            if (sceneResyncKey !== currentKey) {
+              sceneResyncKey = currentKey;
+              sceneResyncRetries = 0;
+            }
+            if (sceneResyncRetries < 2) {
+              sceneResyncRetries += 1;
+              loadWallpaper(lastStageState);
+            }
+          }
+        }
+      }
+    }
+
     function handleStageState(s) {
       if (!s || typeof s !== 'object') return;
       lastStageState = s;
@@ -451,15 +508,24 @@
       if (key !== currentKey) {
         currentKey = key;
         loadWallpaper(s);
+      } else if (pendingLoadState && isViewportReady()) {
+        const ps = pendingLoadState;
+        pendingLoadState = null;
+        loadWallpaper(ps);
       }
     }
 
     let resizeTimer = null;
     window.addEventListener('resize', () => {
+      if (pendingLoadState && isViewportReady()) {
+        const s = pendingLoadState;
+        pendingLoadState = null;
+        handleStageState(s);
+      }
       if (resizeTimer) clearTimeout(resizeTimer);
       resizeTimer = setTimeout(() => {
-        if (lastStageState) applyVisualParams(lastStageState);
-      }, 60);
+        syncViewportAndCanvas();
+      }, 120);
     });
 
     async function poll() {

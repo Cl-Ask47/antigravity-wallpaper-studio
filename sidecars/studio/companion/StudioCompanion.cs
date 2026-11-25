@@ -348,7 +348,10 @@ namespace WallpaperStudioCompanion
         private string _fallbackPath = "";
         private string _lastDocMaskJson = "";
         private IntPtr _hwnd = IntPtr.Zero;
+        private DispatcherTimer _resyncTimer1 = null;
+        private DispatcherTimer _resyncTimer2 = null;
 
+        public event Action WebViewInitialized;
         public IntPtr Handle { get { return _hwnd; } }
         public bool WebViewReady { get { return _wvReady; } }
         public string WebViewError { get { return _wvError; } }
@@ -363,10 +366,10 @@ namespace WallpaperStudioCompanion
             ShowActivated = false;
             Background = Brushes.Black;
             AllowsTransparency = false;
-            Left = -32000;
-            Top = -32000;
-            Width = 640;
-            Height = 400;
+            Left = 0;
+            Top = 0;
+            Width = 1280;
+            Height = 720;
 
             Grid root = new Grid();
             root.Background = Brushes.Black;
@@ -377,6 +380,7 @@ namespace WallpaperStudioCompanion
 
             _fallbackHost = new Grid();
             _fallbackHost.Effect = _fallbackBlur;
+            _fallbackHost.Visibility = Visibility.Collapsed;
 
             _fallbackImage = new Image();
             _fallbackImage.Stretch = Stretch.UniformToFill;
@@ -386,6 +390,7 @@ namespace WallpaperStudioCompanion
             _fallbackScrim = new Rectangle();
             _fallbackScrim.Fill = Brushes.Black;
             _fallbackScrim.Opacity = 0.22;
+            _fallbackScrim.Visibility = Visibility.Collapsed;
 
             _webView = new WebView2();
             _webView.DefaultBackgroundColor = System.Drawing.Color.Black;
@@ -449,6 +454,7 @@ namespace WallpaperStudioCompanion
                     _webView.CoreWebView2.NavigationCompleted += delegate
                     {
                         try { _webView.ZoomFactor = 1.0; } catch { }
+                        ScheduleViewportResync();
                     };
                     _webView.CoreWebView2.ProcessFailed += delegate(object s, CoreWebView2ProcessFailedEventArgs ev)
                     {
@@ -457,6 +463,8 @@ namespace WallpaperStudioCompanion
                         {
                             Dispatcher.BeginInvoke(new Action(delegate
                             {
+                                _fallbackHost.Visibility = Visibility.Visible;
+                                _fallbackScrim.Visibility = Visibility.Visible;
                                 _webView.Visibility = Visibility.Collapsed;
                             }));
                         }
@@ -464,7 +472,14 @@ namespace WallpaperStudioCompanion
                     };
                     _wvReady = true;
                     _wvError = "";
+                    _lastDipScale = 0;
                     SyncWebViewNavigation();
+                    ScheduleViewportResync();
+                    Action cb = WebViewInitialized;
+                    if (cb != null)
+                    {
+                        try { cb(); } catch { }
+                    }
                 }
             }
             catch (Exception ex)
@@ -475,6 +490,8 @@ namespace WallpaperStudioCompanion
                 {
                     Dispatcher.BeginInvoke(new Action(delegate
                     {
+                        _fallbackHost.Visibility = Visibility.Visible;
+                        _fallbackScrim.Visibility = Visibility.Visible;
                         _webView.Visibility = Visibility.Collapsed;
                     }));
                 }
@@ -533,15 +550,84 @@ namespace WallpaperStudioCompanion
 
         public void SyncWpfSize(int physW, int physH, double dpiScale)
         {
+            if (!_wvReady) return;
             if (dpiScale <= 0) dpiScale = 1.0;
             if (Math.Abs(dpiScale - _lastDipScale) < 0.01) return;
+            ForceSyncWebView(dpiScale);
+        }
+
+        public void ForceSyncWebView(double dpiScale)
+        {
+            if (dpiScale <= 0) dpiScale = 1.0;
             _lastDipScale = dpiScale;
+            if (!_wvReady) return;
             try
             {
-                if (_wvReady)
+                _webView.ZoomFactor = 1.0;
+                _webView.InvalidateMeasure();
+                InvalidateMeasure();
+                UpdateLayout();
+                SendViewportResync();
+                ScheduleViewportResync();
+            }
+            catch { }
+        }
+
+        public void SendViewportResync()
+        {
+            if (!_wvReady || _webView.CoreWebView2 == null) return;
+            try
+            {
+                _webView.CoreWebView2.PostWebMessageAsJson("{\"type\":\"resyncViewport\"}");
+            }
+            catch { }
+        }
+
+        public void ScheduleViewportResync()
+        {
+            try
+            {
+                if (_resyncTimer1 == null)
                 {
-                    _webView.ZoomFactor = 1.0;
+                    _resyncTimer1 = new DispatcherTimer(DispatcherPriority.Background);
+                    _resyncTimer1.Interval = TimeSpan.FromMilliseconds(250);
+                    _resyncTimer1.Tick += delegate
+                    {
+                        _resyncTimer1.Stop();
+                        try
+                        {
+                            if (_wvReady)
+                            {
+                                _webView.ZoomFactor = 1.0;
+                                SendViewportResync();
+                            }
+                        }
+                        catch { }
+                    };
                 }
+                _resyncTimer1.Stop();
+                _resyncTimer1.Start();
+
+                if (_resyncTimer2 == null)
+                {
+                    _resyncTimer2 = new DispatcherTimer(DispatcherPriority.Background);
+                    _resyncTimer2.Interval = TimeSpan.FromMilliseconds(850);
+                    _resyncTimer2.Tick += delegate
+                    {
+                        _resyncTimer2.Stop();
+                        try
+                        {
+                            if (_wvReady)
+                            {
+                                _webView.ZoomFactor = 1.0;
+                                SendViewportResync();
+                            }
+                        }
+                        catch { }
+                    };
+                }
+                _resyncTimer2.Stop();
+                _resyncTimer2.Start();
             }
             catch { }
         }
@@ -826,6 +912,7 @@ namespace WallpaperStudioCompanion
         private static DateTime _lastWindowDiscovery = DateTime.MinValue;
         private static DateTime _lastInsetCalib = DateTime.MinValue;
         private static DateTime _lastResizeApply = DateTime.MinValue;
+        private static DateTime _bootUtc = DateTime.UtcNow;
         private static DateTime _lastTitlePoll = DateTime.MinValue;
         private static int _insetL = 0, _insetT = 0, _insetR = 0, _insetB = 0;
         private static double _cachedDpiScale = 1.0;
@@ -941,6 +1028,7 @@ namespace WallpaperStudioCompanion
         [STAThread]
         public static void Main(string[] args)
         {
+            _bootUtc = DateTime.UtcNow;
             Native.EnableDpiAwareness();
             try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.AboveNormal; } catch { }
 
@@ -1010,11 +1098,21 @@ namespace WallpaperStudioCompanion
                 _lastRawW = 0;
                 _lastRawH = 0;
                 SyncGeometry(true);
+                if (_backdrop != null && _backdrop.WebViewReady)
+                {
+                    _backdrop.ForceSyncWebView(_cachedDpiScale);
+                }
             };
 
             _backdrop = new BackdropWindow();
             _hud = new RingHudWindow();
             LoadHudOffset();
+
+            _backdrop.WebViewInitialized += delegate
+            {
+                _lastInsetCalib = DateTime.MinValue;
+                SyncGeometry(true);
+            };
 
             _hud.OffsetChanged += delegate(int ox, int oy)
             {
@@ -1029,7 +1127,20 @@ namespace WallpaperStudioCompanion
 
             _backdrop.Show();
             _hud.Show();
-            Native.SetWindowPos(_backdrop.Handle, IntPtr.Zero, -32000, -32000, 10, 10, Native.SWP_NOACTIVATE | Native.SWP_HIDEWINDOW);
+            int initX = 0, initY = 0, initW = 1280, initH = 720;
+            IntPtr initAgy = Native.PickPrimaryAntigravityWindow();
+            if (initAgy != IntPtr.Zero)
+            {
+                Native.RECT ir;
+                if (Native.GetVisibleBounds(initAgy, out ir) && ir.Width >= 200 && ir.Height >= 140)
+                {
+                    initX = ir.Left;
+                    initY = ir.Top;
+                    initW = ir.Width;
+                    initH = ir.Height;
+                }
+            }
+            Native.SetWindowPos(_backdrop.Handle, IntPtr.Zero, initX, initY, initW, initH, Native.SWP_NOACTIVATE | Native.SWP_HIDEWINDOW);
             Native.SetWindowPos(_hud.Handle, IntPtr.Zero, -32000, -32000, 10, 10, Native.SWP_NOACTIVATE | Native.SWP_HIDEWINDOW);
 
             DispatcherTimer stateTimer = new DispatcherTimer();
@@ -1169,6 +1280,10 @@ namespace WallpaperStudioCompanion
                 _lastRawW = 0;
                 _lastRawH = 0;
                 SyncGeometry(true);
+                if (_backdrop != null && _backdrop.WebViewReady)
+                {
+                    _backdrop.ForceSyncWebView(_cachedDpiScale);
+                }
                 return;
             }
             if (eventType == Native.EVENT_SYSTEM_MOVESIZESTART)
@@ -1644,8 +1759,15 @@ namespace WallpaperStudioCompanion
                 rect = rawRect;
             }
 
-            bool wantBackdrop = _state.backdropEnabled && !string.IsNullOrEmpty(_state.stageUrl) && _backdrop.Handle != IntPtr.Zero;
+            bool wantStageBoot = _state.backdropEnabled && !string.IsNullOrEmpty(_state.stageUrl) && _backdrop.Handle != IntPtr.Zero;
+            bool wvBootSettled = _backdrop.WebViewReady || !string.IsNullOrEmpty(_backdrop.WebViewError) || (DateTime.UtcNow - _bootUtc).TotalMilliseconds >= 2500;
+            bool wantBackdrop = wantStageBoot && wvBootSettled;
             bool wantHud = _state.hudEnabled && _hud.Handle != IntPtr.Zero;
+
+            if (wantStageBoot && !wantBackdrop)
+            {
+                _backdrop.SetPlaybackActive(true);
+            }
 
             if (wantBackdrop)
             {
@@ -1798,6 +1920,7 @@ namespace WallpaperStudioCompanion
 
             if (!needBackdropOp && !needHudOp) return;
 
+            bool becameVisible = wantBackdrop && !_lastBackdropShown;
             int opCount = (needBackdropOp ? 1 : 0) + (needHudOp ? 1 : 0);
             IntPtr hdwp = Native.BeginDeferWindowPos(opCount);
             if (hdwp != IntPtr.Zero)
@@ -1825,6 +1948,10 @@ namespace WallpaperStudioCompanion
             {
                 _lastBackdropShown = wantBackdrop;
                 if (wantBackdrop) _lastBackdropRect = bgTargetRect;
+                if (becameVisible)
+                {
+                    _backdrop.ForceSyncWebView(_cachedDpiScale);
+                }
             }
             if (needHudOp)
             {
