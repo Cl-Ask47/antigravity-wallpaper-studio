@@ -60,6 +60,10 @@ const DEFAULT_CONFIG = {
   docMaskEnabled: true,
   docMaskMode: 'auto', // 'auto' | 'dark' | 'light'
   hostBgColor: '#0f1419',
+  // Power saving
+  lowPowerMode: false,
+  pauseWhenUnfocused: true,
+  lowPowerStaticMode: false,
 };
 
 function clamp(n, min, max, fallback) {
@@ -179,6 +183,16 @@ function sanitizeConfig(raw) {
       typeof src.hostBgColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(src.hostBgColor.trim())
         ? src.hostBgColor.trim()
         : DEFAULT_CONFIG.hostBgColor,
+    lowPowerMode:
+      typeof src.lowPowerMode === 'boolean' ? src.lowPowerMode : DEFAULT_CONFIG.lowPowerMode,
+    pauseWhenUnfocused:
+      typeof src.pauseWhenUnfocused === 'boolean'
+        ? src.pauseWhenUnfocused
+        : DEFAULT_CONFIG.pauseWhenUnfocused,
+    lowPowerStaticMode:
+      typeof src.lowPowerStaticMode === 'boolean'
+        ? src.lowPowerStaticMode
+        : DEFAULT_CONFIG.lowPowerStaticMode,
   };
 }
 
@@ -374,6 +388,8 @@ function getStageState() {
     sceneFps: config.sceneFps,
     videoMuted: config.videoMuted,
     videoVolume: config.videoVolume,
+    lowPowerMode: config.lowPowerMode,
+    lowPowerStaticMode: config.lowPowerStaticMode,
     weAssetsAvailable: Boolean(libraryCache?.weAssetsDir),
   };
 }
@@ -398,6 +414,8 @@ function buildCompanionPayload(telemetry) {
     hudEnabled: config.hudEnabled,
     docMaskEnabled: config.docMaskEnabled,
     docMaskColor: resolveDocMaskColor(),
+    lowPowerMode: config.lowPowerMode,
+    pauseWhenUnfocused: config.pauseWhenUnfocused,
     stageUrl: port > 0 ? `http://127.0.0.1:${port}/stage?localAssets=1` : '',
     previewPath: wp?.previewPath || '',
     mediaPath: wp?.effectiveBackdropPath || '',
@@ -575,6 +593,8 @@ app.api('/api/live', (data) => {
     hudFont: config.hudFont,
     docMaskEnabled: config.docMaskEnabled,
     docMaskColor: resolveDocMaskColor(),
+    lowPowerMode: config.lowPowerMode,
+    pauseWhenUnfocused: config.pauseWhenUnfocused,
   });
   return { ok: true };
 });

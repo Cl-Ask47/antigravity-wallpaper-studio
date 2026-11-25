@@ -27,7 +27,6 @@
       overflow: hidden;
       background: #000;
       transform-origin: center center;
-      will-change: filter, transform;
     }
 
     .slot {
@@ -140,6 +139,11 @@
       window.chrome.webview.addEventListener('message', (ev) => {
         const msg = ev && ev.data;
         if (!msg) return;
+        if (msg.type === 'powerState') {
+          powerPaused = !!msg.paused;
+          applyPowerPause();
+          return;
+        }
         if (msg.type === 'resyncViewport') {
           try { window.dispatchEvent(new Event('resize')); } catch {}
           syncViewportAndCanvas();
@@ -181,6 +185,25 @@
     let pendingLoadState = null;
     let sceneResyncRetries = 0;
     let sceneResyncKey = '';
+    let powerPaused = false;
+
+    function applyPowerPause() {
+      if (activeIdx < 0) return;
+      const slot = slots[activeIdx];
+      if (!slot) return;
+      if (slot.vid && slot.vid.style.display !== 'none') {
+        try {
+          if (powerPaused) slot.vid.pause();
+          else slot.vid.play().catch(() => {});
+        } catch {}
+      }
+      if (slot.sceneInst) {
+        try {
+          if (powerPaused) slot.sceneInst.pause && slot.sceneInst.pause();
+          else slot.sceneInst.resume && slot.sceneInst.resume();
+        } catch {}
+      }
+    }
 
     function isViewportReady() {
       return window.innerWidth >= 120 && window.innerHeight >= 120;
@@ -193,7 +216,7 @@
       }
       if (slot.sceneInst) {
         try { slot.sceneInst.release(); } catch {}
-        try { slot.sceneInst.destroy && slot.sceneInst.destroy(); } catch {}
+        try { slot.sceneInst.destroy && slot.sceneInst.destroy({ releasePkgCache: true }); } catch {}
         slot.sceneInst = null;
       }
       slot.wwgl.innerHTML = '';
@@ -222,6 +245,7 @@
       if (bri !== 100) filters.push(`brightness(${bri}%)`);
       if (con !== 100) filters.push(`contrast(${con}%)`);
       if (sat !== 100) filters.push(`saturate(${sat}%)`);
+      mediaRoot.style.willChange = blur > 0 ? 'filter, transform' : 'auto';
       mediaRoot.style.filter = filters.join(' ');
       mediaRoot.style.transform = blur > 0 ? `scale(${(1 + blur * 0.004).toFixed(3)})` : '';
       scrim.style.opacity = String((dim / 100).toFixed(3));
@@ -231,8 +255,16 @@
       for (const slot of slots) {
         slot.vid.muted = muted;
         slot.vid.volume = vol;
-        if (slot.sceneInst && typeof slot.sceneInst.setVolume === 'function') {
-          try { slot.sceneInst.setVolume(vol); } catch {}
+        if (slot.sceneInst) {
+          if (typeof slot.sceneInst.setVolume === 'function') {
+            try { slot.sceneInst.setVolume(vol); } catch {}
+          }
+          if (typeof slot.sceneInst.setRenderDpr === 'function') {
+            try { slot.sceneInst.setRenderDpr(s.lowPowerMode ? 0.75 : 0); } catch {}
+          }
+          if (typeof slot.sceneInst.setVideoTexScale === 'function') {
+            try { slot.sceneInst.setVideoTexScale(s.lowPowerMode ? 0.5 : 1); } catch {}
+          }
         }
       }
     }
@@ -324,11 +356,12 @@
 
       const wpBase = `/wp/${encodeURIComponent(s.wallpaperId)}`;
       const previewUrl = s.hasPreview ? `/preview/${encodeURIComponent(s.wallpaperId)}` : '';
-      const mode = s.renderMode || 'image';
+      const mode = (s.lowPowerMode && s.lowPowerStaticMode) ? 'image' : (s.renderMode || 'image');
 
       if (mode === 'video' && s.entryFile) {
         // Prepare preview silently in case video takes longer to decode first frame
         const prevReady = preloadImg(slot.preview, previewUrl, 700);
+        slot.vid.preload = s.lowPowerMode ? 'metadata' : 'auto';
         slot.vid.style.display = 'block';
         slot.vid.muted = s.videoMuted !== false;
         slot.vid.volume = slot.vid.muted ? 0 : Math.max(0, Math.min(1, (Number(s.videoVolume) || 0) / 100));
@@ -338,6 +371,9 @@
           if (revealed || seq !== loadSeq) return;
           revealed = true;
           commitCrossfade(nextIdx, seq);
+          if (powerPaused) {
+            try { slot.vid.pause(); } catch {}
+          }
         };
 
         const videoWaitMs = isColdStart ? 2400 : 1100;
@@ -346,10 +382,13 @@
           slot.vid.onplaying = () => {
             clearTimeout(t);
             slot.preview.classList.remove('visible');
+            if (powerPaused) {
+              try { slot.vid.pause(); } catch {}
+            }
             resolve(true);
           };
           slot.vid.oncanplay = () => {
-            slot.vid.play().catch(() => {});
+            if (!powerPaused) slot.vid.play().catch(() => {});
           };
         });
 
@@ -415,10 +454,12 @@
         try {
           const { createScene, httpSource } = globalThis.WebWallGL;
           const vol = s.videoMuted !== false ? 0 : Math.max(0, Math.min(1, (Number(s.videoVolume) || 0) / 100));
+          const effectiveFps = s.lowPowerMode ? Math.min(Number(s.sceneFps) || 30, 15) : (Number(s.sceneFps) || 30);
           const inst = createScene(slot.wwgl, {
             fit: 'cover',
-            fps: Number(s.sceneFps) || 30,
+            fps: effectiveFps,
             volume: vol,
+            ...(s.lowPowerMode ? { renderDpr: 0.75, videoTexScale: 0.5 } : {}),
           });
           slot.sceneInst = inst;
           inst.on && inst.on('error', () => {
@@ -432,6 +473,9 @@
           if (seq !== loadSeq) {
             try { inst.release(); } catch {}
             return;
+          }
+          if (powerPaused && inst.pause) {
+            try { inst.pause(); } catch {}
           }
           setTimeout(() => {
             if (seq !== loadSeq || slot.sceneInst !== inst) return;
@@ -456,10 +500,10 @@
         return;
       }
 
-      // Pure image wallpaper
-      const imgUrl = s.entryFile && mode === 'image'
+      // Pure image / static low-power wallpaper
+      const imgUrl = (s.renderMode === 'image' && s.entryFile)
         ? `${wpBase}/${encodeRelPath(s.entryFile)}`
-        : previewUrl;
+        : (previewUrl || (s.entryFile ? `${wpBase}/${encodeRelPath(s.entryFile)}` : ''));
       await preloadImg(slot.preview, imgUrl, 1200);
       if (seq !== loadSeq) return;
       slot.preview.classList.add('visible');
@@ -475,7 +519,7 @@
         handleStageState(s);
         return;
       }
-      if (activeIdx >= 0 && isViewportReady() && lastStageState && lastStageState.renderMode === 'scene' && lastStageState.backdropEnabled) {
+      if (activeIdx >= 0 && isViewportReady() && lastStageState && lastStageState.renderMode === 'scene' && lastStageState.backdropEnabled && !(lastStageState.lowPowerMode && lastStageState.lowPowerStaticMode)) {
         const slot = slots[activeIdx];
         const cvs = slot && slot.wwgl ? slot.wwgl.querySelector('canvas') : null;
         if (cvs && slot.wwgl.clientWidth >= 120 && slot.wwgl.clientHeight >= 120) {
@@ -504,7 +548,7 @@
       if (!s || typeof s !== 'object') return;
       lastStageState = s;
       applyVisualParams(s);
-      const key = `${s.backdropEnabled ? 1 : 0}|${s.wallpaperId || ''}|${s.renderMode || ''}|${s.entryFile || ''}|${s.sceneFps || 30}`;
+      const key = `${s.backdropEnabled ? 1 : 0}|${s.wallpaperId || ''}|${s.renderMode || ''}|${s.entryFile || ''}|${s.sceneFps || 30}|${s.lowPowerMode ? 1 : 0}|${s.lowPowerStaticMode ? 1 : 0}`;
       if (key !== currentKey) {
         currentKey = key;
         loadWallpaper(s);

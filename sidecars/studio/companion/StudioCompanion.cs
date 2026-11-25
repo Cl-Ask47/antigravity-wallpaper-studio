@@ -31,6 +31,8 @@ namespace WallpaperStudioCompanion
         public bool backdropEnabled { get; set; }
         public bool hudEnabled { get; set; }
         public bool docMaskEnabled { get; set; }
+        public bool lowPowerMode { get; set; }
+        public bool pauseWhenUnfocused { get; set; }
         public string docMaskColor { get; set; }
         public string stageUrl { get; set; }
         public string previewPath { get; set; }
@@ -116,6 +118,7 @@ namespace WallpaperStudioCompanion
         public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
 
         public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+        public const int DWMWA_CLOAKED = 14;
         public const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
         public const int DWMWCP_ROUND = 2;
 
@@ -183,7 +186,13 @@ namespace WallpaperStudioCompanion
         public static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out RECT pvAttribute, int cbAttribute);
 
         [DllImport("dwmapi.dll")]
+        public static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
+
+        [DllImport("dwmapi.dll")]
         public static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool SetProcessWorkingSetSize(IntPtr hProcess, IntPtr dwMinimumWorkingSetSize, IntPtr dwMaximumWorkingSetSize);
 
         [DllImport("user32.dll")]
         public static extern bool SetProcessDPIAware();
@@ -322,6 +331,85 @@ namespace WallpaperStudioCompanion
             catch { }
         }
 
+        public static void TrimWorkingSet()
+        {
+            try
+            {
+                SetProcessWorkingSetSize(Process.GetCurrentProcess().Handle, new IntPtr(-1), new IntPtr(-1));
+            }
+            catch { }
+        }
+
+        public static bool IsWindowCloaked(IntPtr hwnd)
+        {
+            try
+            {
+                int cloaked = 0;
+                if (DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, out cloaked, sizeof(int)) == 0)
+                {
+                    return cloaked != 0;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        public static HashSet<uint> GetAntigravityPids()
+        {
+            HashSet<uint> pids = new HashSet<uint>();
+            try
+            {
+                Process[] procs = Process.GetProcessesByName("Antigravity");
+                for (int i = 0; i < procs.Length; i++)
+                {
+                    try { pids.Add((uint)procs[i].Id); } catch { }
+                    try { procs[i].Dispose(); } catch { }
+                }
+            }
+            catch { }
+            return pids;
+        }
+
+        public static bool IsWindowFullyOccluded(IntPtr agyHwnd, IntPtr backdropHwnd, IntPtr hudHwnd, RECT agyRect)
+        {
+            long agyArea = (long)agyRect.Width * agyRect.Height;
+            if (agyArea <= 0 || agyHwnd == IntPtr.Zero) return false;
+            try
+            {
+                IntPtr cur = GetWindow(agyHwnd, GW_HWNDPREV);
+                int steps = 0;
+                while (cur != IntPtr.Zero && steps++ < 64)
+                {
+                    if (cur != backdropHwnd && cur != hudHwnd && IsWindowVisible(cur) && !IsIconic(cur) && !IsWindowCloaked(cur))
+                    {
+                        int ex = GetWindowLong(cur, GWL_EXSTYLE);
+                        if ((ex & WS_EX_TOOLWINDOW) == 0 && (ex & WS_EX_TRANSPARENT) == 0)
+                        {
+                            RECT wr;
+                            if (GetWindowRect(cur, out wr) && wr.Width > 80 && wr.Height > 80)
+                            {
+                                int il = Math.Max(agyRect.Left, wr.Left);
+                                int it = Math.Max(agyRect.Top, wr.Top);
+                                int ir = Math.Min(agyRect.Right, wr.Right);
+                                int ib = Math.Min(agyRect.Bottom, wr.Bottom);
+                                if (ir > il && ib > it)
+                                {
+                                    long interArea = (long)(ir - il) * (ib - it);
+                                    if (interArea >= (long)(agyArea * 0.90))
+                                    {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    cur = GetWindow(cur, GW_HWNDPREV);
+                }
+            }
+            catch { }
+            return false;
+        }
+
         public static void RestoreAllAntigravityWindows()
         {
             List<IntPtr> wins = FindAntigravityWindows();
@@ -350,6 +438,10 @@ namespace WallpaperStudioCompanion
         private IntPtr _hwnd = IntPtr.Zero;
         private DispatcherTimer _resyncTimer1 = null;
         private DispatcherTimer _resyncTimer2 = null;
+        private bool _lowPowerDesired = false;
+        private bool _lowPowerApplied = false;
+        private bool _hasLowPowerApplied = false;
+        private string _lastPowerMsgJson = "";
 
         public event Action WebViewInitialized;
         public IntPtr Handle { get { return _hwnd; } }
@@ -454,6 +546,7 @@ namespace WallpaperStudioCompanion
                     _webView.CoreWebView2.NavigationCompleted += delegate
                     {
                         try { _webView.ZoomFactor = 1.0; } catch { }
+                        _lastPowerMsgJson = "";
                         ScheduleViewportResync();
                     };
                     _webView.CoreWebView2.ProcessFailed += delegate(object s, CoreWebView2ProcessFailedEventArgs ev)
@@ -473,6 +566,7 @@ namespace WallpaperStudioCompanion
                     _wvReady = true;
                     _wvError = "";
                     _lastDipScale = 0;
+                    ApplyMemoryTarget(_lowPowerDesired);
                     SyncWebViewNavigation();
                     ScheduleViewportResync();
                     Action cb = WebViewInitialized;
@@ -520,6 +614,8 @@ namespace WallpaperStudioCompanion
         public void ApplyState(CompanionState s)
         {
             _desiredStageUrl = s.stageUrl ?? "";
+            _lowPowerDesired = s.lowPowerMode;
+            ApplyMemoryTarget(s.lowPowerMode);
             _fallbackBlur.Radius = Math.Max(0, Math.Min(24, s.backdropBlur));
             _fallbackScrim.Opacity = Math.Max(0.0, Math.Min(0.8, s.backdropDim / 100.0));
 
@@ -632,10 +728,64 @@ namespace WallpaperStudioCompanion
             catch { }
         }
 
+        public void ApplyMemoryTarget(bool lowPower)
+        {
+            if (!_wvReady || _webView.CoreWebView2 == null) return;
+            if (_hasLowPowerApplied && _lowPowerApplied == lowPower) return;
+            _hasLowPowerApplied = true;
+            _lowPowerApplied = lowPower;
+            try
+            {
+                _webView.CoreWebView2.MemoryUsageTargetLevel = lowPower
+                    ? CoreWebView2MemoryUsageTargetLevel.Low
+                    : CoreWebView2MemoryUsageTargetLevel.Normal;
+            }
+            catch { }
+        }
+
+        public void SetPowerPaused(bool paused, bool lowPower)
+        {
+            if (!_wvReady || _webView.CoreWebView2 == null) return;
+            string json = string.Format("{{\"type\":\"powerState\",\"paused\":{0},\"lowPower\":{1}}}",
+                paused ? "true" : "false",
+                lowPower ? "true" : "false");
+            if (json == _lastPowerMsgJson) return;
+            _lastPowerMsgJson = json;
+            try
+            {
+                _webView.CoreWebView2.PostWebMessageAsJson(json);
+            }
+            catch { }
+        }
+
+        public void TrySuspendWhenHidden(bool lowPower)
+        {
+            if (!lowPower || !_wvReady || _webView.CoreWebView2 == null) return;
+            try
+            {
+                _webView.CoreWebView2.TrySuspendAsync();
+            }
+            catch { }
+        }
+
+        public void EnsureResumed()
+        {
+            if (!_wvReady || _webView.CoreWebView2 == null) return;
+            try
+            {
+                if (_webView.CoreWebView2.IsSuspended)
+                {
+                    _webView.CoreWebView2.Resume();
+                }
+            }
+            catch { }
+        }
+
         public void SetPlaybackActive(bool active)
         {
             if (_playbackActive == active) return;
             _playbackActive = active;
+            if (active) EnsureResumed();
             SyncWebViewNavigation();
         }
 
@@ -913,6 +1063,11 @@ namespace WallpaperStudioCompanion
         private static DateTime _lastInsetCalib = DateTime.MinValue;
         private static DateTime _lastResizeApply = DateTime.MinValue;
         private static DateTime _bootUtc = DateTime.UtcNow;
+        private static DispatcherTimer _geomTimer = null;
+        private static HashSet<uint> _cachedAgyPids = new HashSet<uint>();
+        private static DateTime _unfocusedSinceUtc = DateTime.MinValue;
+        private static bool _pausedByPower = false;
+        private static string _pauseReason = "";
         private static DateTime _lastTitlePoll = DateTime.MinValue;
         private static int _insetL = 0, _insetT = 0, _insetR = 0, _insetB = 0;
         private static double _cachedDpiScale = 1.0;
@@ -972,6 +1127,9 @@ namespace WallpaperStudioCompanion
                 obj["activeUrl"] = _backdrop != null ? (_backdrop.ActiveUrl ?? "") : "";
                 obj["backdropEnabled"] = _state.backdropEnabled;
                 obj["translucency"] = _state.windowTranslucency;
+                obj["lowPowerMode"] = _state.lowPowerMode;
+                obj["pausedByPower"] = _pausedByPower;
+                obj["pauseReason"] = _pauseReason;
                 lock (_docLock)
                 {
                     obj["docVisible"] = _docVisible;
@@ -1164,13 +1322,13 @@ namespace WallpaperStudioCompanion
             };
             stateTimer.Start();
 
-            DispatcherTimer geomTimer = new DispatcherTimer(DispatcherPriority.Background);
-            geomTimer.Interval = TimeSpan.FromMilliseconds(240);
-            geomTimer.Tick += delegate
+            _geomTimer = new DispatcherTimer(DispatcherPriority.Background);
+            _geomTimer.Interval = TimeSpan.FromMilliseconds(_state.lowPowerMode ? 480 : 240);
+            _geomTimer.Tick += delegate
             {
                 if (!_isMovingOrSizing) SyncGeometry(false);
             };
-            geomTimer.Start();
+            _geomTimer.Start();
 
             _dragTimer = new DispatcherTimer(DispatcherPriority.Input);
             _dragTimer.Interval = TimeSpan.FromMilliseconds(8);
@@ -1331,7 +1489,7 @@ namespace WallpaperStudioCompanion
                         }
                     }
                     catch { }
-                    Thread.Sleep(_isMovingOrSizing ? 120 : 220);
+                    Thread.Sleep(_isMovingOrSizing ? 120 : (_state.lowPowerMode ? 600 : 220));
                 }
             });
             t.IsBackground = true;
@@ -1540,6 +1698,31 @@ namespace WallpaperStudioCompanion
             {
                 _state.docMaskColor = Convert.ToString(patch["docMaskColor"]);
             }
+            bool powerChanged = false;
+            if (patch.ContainsKey("lowPowerMode"))
+            {
+                bool b;
+                if (bool.TryParse(Convert.ToString(patch["lowPowerMode"]), out b))
+                {
+                    _state.lowPowerMode = b;
+                    powerChanged = true;
+                }
+            }
+            if (patch.ContainsKey("pauseWhenUnfocused"))
+            {
+                bool b;
+                if (bool.TryParse(Convert.ToString(patch["pauseWhenUnfocused"]), out b))
+                {
+                    _state.pauseWhenUnfocused = b;
+                    powerChanged = true;
+                }
+            }
+            if (powerChanged)
+            {
+                if (_backdrop != null) _backdrop.ApplyMemoryTarget(_state.lowPowerMode);
+                if (_geomTimer != null) _geomTimer.Interval = TimeSpan.FromMilliseconds(_state.lowPowerMode ? 480 : 240);
+                SyncGeometry(false);
+            }
 
             if (alphaDirty && _state.backdropEnabled && _trackedAgy != IntPtr.Zero && Native.IsWindowVisible(_trackedAgy) && !Native.IsIconic(_trackedAgy))
             {
@@ -1614,6 +1797,10 @@ namespace WallpaperStudioCompanion
                 if (parsed != null)
                 {
                     _state = parsed;
+                    if (_geomTimer != null)
+                    {
+                        _geomTimer.Interval = TimeSpan.FromMilliseconds(_state.lowPowerMode ? 480 : 240);
+                    }
                     _backdrop.ApplyState(_state);
                     _hud.RenderState(_state);
                 }
@@ -1644,6 +1831,13 @@ namespace WallpaperStudioCompanion
                     Native.SetWindowPos(_backdrop.Handle, IntPtr.Zero, 0, 0, 0, 0,
                         Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_HIDEWINDOW);
                     _lastBackdropShown = false;
+                }
+                if (_state.lowPowerMode && _backdrop != null)
+                {
+                    _pausedByPower = true;
+                    _pauseReason = "minimized";
+                    _backdrop.TrySuspendWhenHidden(true);
+                    Native.TrimWorkingSet();
                 }
                 if (_hud != null && _hud.Handle != IntPtr.Zero && _lastHudShown)
                 {
@@ -1679,6 +1873,7 @@ namespace WallpaperStudioCompanion
                 if (needDiscover)
                 {
                     _lastWindowDiscovery = DateTime.UtcNow;
+                    _cachedAgyPids = Native.GetAntigravityPids();
                     IntPtr agy = Native.PickPrimaryAntigravityWindow();
                     if (agy != _trackedAgy && _trackedAgy != IntPtr.Zero)
                     {
@@ -1785,6 +1980,44 @@ namespace WallpaperStudioCompanion
                 }
                 _backdrop.SetPlaybackActive(true);
 
+                bool shouldPause = false;
+                string reason = "";
+                if (_state.lowPowerMode)
+                {
+                    if (!_isMovingOrSizing && Native.IsWindowFullyOccluded(tracked, _backdrop.Handle, _hud.Handle, rect))
+                    {
+                        shouldPause = true;
+                        reason = "occluded";
+                    }
+                    else if (_state.pauseWhenUnfocused && !_isMovingOrSizing)
+                    {
+                        IntPtr fg = Native.GetForegroundWindow();
+                        uint fgPid = 0;
+                        if (fg != IntPtr.Zero) Native.GetWindowThreadProcessId(fg, out fgPid);
+                        bool isAgyFg = (fg == tracked) || (fgPid != 0 && _cachedAgyPids.Contains(fgPid));
+                        if (!isAgyFg)
+                        {
+                            if (_unfocusedSinceUtc == DateTime.MinValue) _unfocusedSinceUtc = DateTime.UtcNow;
+                            if ((DateTime.UtcNow - _unfocusedSinceUtc).TotalMilliseconds >= 1200)
+                            {
+                                shouldPause = true;
+                                reason = "unfocused";
+                            }
+                        }
+                        else
+                        {
+                            _unfocusedSinceUtc = DateTime.MinValue;
+                        }
+                    }
+                }
+                else
+                {
+                    _unfocusedSinceUtc = DateTime.MinValue;
+                }
+                _pausedByPower = shouldPause;
+                _pauseReason = reason;
+                _backdrop.SetPowerPaused(shouldPause, _state.lowPowerMode);
+
                 // Sync doc-preview region mask (relative to backdrop window in CSS DIPs)
                 if (_state.docMaskEnabled)
                 {
@@ -1829,6 +2062,9 @@ namespace WallpaperStudioCompanion
             }
             else
             {
+                _pausedByPower = false;
+                _pauseReason = "";
+                _unfocusedSinceUtc = DateTime.MinValue;
                 if (_lastAppliedAlpha != 255)
                 {
                     Native.SetWindowAlpha(tracked, 255);
