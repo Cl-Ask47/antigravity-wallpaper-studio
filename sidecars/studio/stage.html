@@ -233,12 +233,19 @@
       slot.preview.removeAttribute('src');
     }
 
+    let lastVisualSig = '';
     function applyVisualParams(s) {
       const blur = Math.max(0, Math.min(24, Number(s.backdropBlur) || 0));
       const bri = Math.max(40, Math.min(160, Number(s.brightness) || 100));
       const con = Math.max(50, Math.min(160, Number(s.contrast) || 100));
       const sat = Math.max(0, Math.min(200, Number(s.saturate) || 100));
       const dim = Math.max(0, Math.min(80, Number(s.backdropDim) || 0));
+      const muted = s.videoMuted !== false;
+      const vol = muted ? 0 : Math.max(0, Math.min(1, (Number(s.videoVolume) || 0) / 100));
+
+      const sig = `${blur}|${bri}|${con}|${sat}|${dim}|${muted ? 1 : 0}|${vol.toFixed(2)}`;
+      if (sig === lastVisualSig) return;
+      lastVisualSig = sig;
 
       const filters = [];
       if (blur > 0) filters.push(`blur(${blur}px)`);
@@ -250,21 +257,11 @@
       mediaRoot.style.transform = blur > 0 ? `scale(${(1 + blur * 0.004).toFixed(3)})` : '';
       scrim.style.opacity = String((dim / 100).toFixed(3));
 
-      const muted = s.videoMuted !== false;
-      const vol = muted ? 0 : Math.max(0, Math.min(1, (Number(s.videoVolume) || 0) / 100));
       for (const slot of slots) {
         slot.vid.muted = muted;
         slot.vid.volume = vol;
-        if (slot.sceneInst) {
-          if (typeof slot.sceneInst.setVolume === 'function') {
-            try { slot.sceneInst.setVolume(vol); } catch {}
-          }
-          if (typeof slot.sceneInst.setRenderDpr === 'function') {
-            try { slot.sceneInst.setRenderDpr(s.lowPowerMode ? 0.75 : 0); } catch {}
-          }
-          if (typeof slot.sceneInst.setVideoTexScale === 'function') {
-            try { slot.sceneInst.setVideoTexScale(s.lowPowerMode ? 0.5 : 1); } catch {}
-          }
+        if (slot.sceneInst && typeof slot.sceneInst.setVolume === 'function') {
+          try { slot.sceneInst.setVolume(vol); } catch {}
         }
       }
     }
@@ -361,7 +358,7 @@
       if (mode === 'video' && s.entryFile) {
         // Prepare preview silently in case video takes longer to decode first frame
         const prevReady = preloadImg(slot.preview, previewUrl, 700);
-        slot.vid.preload = s.lowPowerMode ? 'metadata' : 'auto';
+        slot.vid.preload = 'auto';
         slot.vid.style.display = 'block';
         slot.vid.muted = s.videoMuted !== false;
         slot.vid.volume = slot.vid.muted ? 0 : Math.max(0, Math.min(1, (Number(s.videoVolume) || 0) / 100));
@@ -454,12 +451,12 @@
         try {
           const { createScene, httpSource } = globalThis.WebWallGL;
           const vol = s.videoMuted !== false ? 0 : Math.max(0, Math.min(1, (Number(s.videoVolume) || 0) / 100));
-          const effectiveFps = s.lowPowerMode ? Math.min(Number(s.sceneFps) || 30, 15) : (Number(s.sceneFps) || 30);
+          const effectiveFps = s.lowPowerMode ? Math.min(Number(s.sceneFps) || 30, 24) : (Number(s.sceneFps) || 30);
           const inst = createScene(slot.wwgl, {
             fit: 'cover',
             fps: effectiveFps,
             volume: vol,
-            ...(s.lowPowerMode ? { renderDpr: 0.75, videoTexScale: 0.5 } : {}),
+            ...(s.lowPowerMode ? { renderDpr: 1.0 } : {}),
           });
           slot.sceneInst = inst;
           inst.on && inst.on('error', () => {
@@ -523,7 +520,9 @@
         const slot = slots[activeIdx];
         const cvs = slot && slot.wwgl ? slot.wwgl.querySelector('canvas') : null;
         if (cvs && slot.wwgl.clientWidth >= 120 && slot.wwgl.clientHeight >= 120) {
-          const dpr = Math.min(window.devicePixelRatio || 1, 2);
+          const dpr = lastStageState.lowPowerMode
+            ? Math.min(window.devicePixelRatio || 1, 1.0)
+            : Math.min(window.devicePixelRatio || 1, 2);
           const expW = Math.round(slot.wwgl.clientWidth * dpr);
           const expH = Math.round(slot.wwgl.clientHeight * dpr);
           const curAspect = cvs.height > 0 ? (cvs.width / cvs.height) : 1;

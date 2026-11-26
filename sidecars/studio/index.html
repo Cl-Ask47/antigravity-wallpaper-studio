@@ -642,7 +642,7 @@
         <button class="pill-btn active" id="btnToggleSidebar" title="展开/收起参数与轮播侧边栏">☰ 调参侧栏</button>
         <button class="pill-btn" id="btnToggleBackdrop"><span class="dot"></span>贴背</button>
         <button class="pill-btn" id="btnToggleHud"><span class="dot"></span>小圆环</button>
-        <button class="pill-btn" id="btnToggleLowPower" title="低功耗模式：失焦/遮挡自动暂停、3D 降采样限 15FPS、开启 WebView2 低内存档位"><span class="dot"></span>低功耗</button>
+        <button class="pill-btn" id="btnToggleLowPower" title="低功耗模式：失焦/遮挡自动暂停并切低内存档位、隐藏挂起进程、3D 场景 1.0x 原生清晰度限 24FPS"><span class="dot"></span>低功耗</button>
         <button class="pill-btn" id="btnNextWp" title="按当前轮播池立即切换下一张">🎲 下一张</button>
         <button class="mini-btn" id="btnRestoreOpacity" title="一键关闭贴背并恢复 100% 不透明">恢复原貌</button>
         <div class="seg-group" id="limitGroup">
@@ -752,7 +752,7 @@
               <input type="checkbox" id="chkLowPowerStatic" />
             </div>
             <div class="status-foot" style="margin-top:6px">
-              开启后自动启用 WebView2 低内存档位、3D 场景 0.75x 分辨率 / 15 FPS 上限、隐藏时挂起渲染进程并释放缓存。
+              开启后：失焦/遮挡自动暂停播放并切入低内存档位、隐藏时挂起渲染进程、3D 场景自动以 1.0x 清晰度 / 24 FPS 运行，兼顾流畅清晰与省电。
             </div>
           </div>
         </details>

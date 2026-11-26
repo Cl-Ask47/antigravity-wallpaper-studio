@@ -566,7 +566,7 @@ namespace WallpaperStudioCompanion
                     _wvReady = true;
                     _wvError = "";
                     _lastDipScale = 0;
-                    ApplyMemoryTarget(_lowPowerDesired);
+                    if (!_lowPowerDesired) ApplyMemoryTarget(false);
                     SyncWebViewNavigation();
                     ScheduleViewportResync();
                     Action cb = WebViewInitialized;
@@ -615,7 +615,7 @@ namespace WallpaperStudioCompanion
         {
             _desiredStageUrl = s.stageUrl ?? "";
             _lowPowerDesired = s.lowPowerMode;
-            ApplyMemoryTarget(s.lowPowerMode);
+            if (!s.lowPowerMode) ApplyMemoryTarget(false);
             _fallbackBlur.Radius = Math.Max(0, Math.Min(24, s.backdropBlur));
             _fallbackScrim.Opacity = Math.Max(0.0, Math.Min(0.8, s.backdropDim / 100.0));
 
@@ -1719,7 +1719,7 @@ namespace WallpaperStudioCompanion
             }
             if (powerChanged)
             {
-                if (_backdrop != null) _backdrop.ApplyMemoryTarget(_state.lowPowerMode);
+                if (!_state.lowPowerMode && _backdrop != null) _backdrop.ApplyMemoryTarget(false);
                 if (_geomTimer != null) _geomTimer.Interval = TimeSpan.FromMilliseconds(_state.lowPowerMode ? 480 : 240);
                 SyncGeometry(false);
             }
@@ -1836,6 +1836,7 @@ namespace WallpaperStudioCompanion
                 {
                     _pausedByPower = true;
                     _pauseReason = "minimized";
+                    _backdrop.ApplyMemoryTarget(true);
                     _backdrop.TrySuspendWhenHidden(true);
                     Native.TrimWorkingSet();
                 }
@@ -2017,6 +2018,7 @@ namespace WallpaperStudioCompanion
                 _pausedByPower = shouldPause;
                 _pauseReason = reason;
                 _backdrop.SetPowerPaused(shouldPause, _state.lowPowerMode);
+                _backdrop.ApplyMemoryTarget(_state.lowPowerMode && shouldPause);
 
                 // Sync doc-preview region mask (relative to backdrop window in CSS DIPs)
                 if (_state.docMaskEnabled)
